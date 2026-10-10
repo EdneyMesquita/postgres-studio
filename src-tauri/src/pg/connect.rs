@@ -19,7 +19,7 @@ use tokio_postgres_rustls::MakeRustlsConnect;
 
 use super::{split, tls};
 use crate::error::{AppError, AppResult};
-use crate::models::{self, ConnectionProfile, ConnectionSource, SslMode};
+use crate::models::{self, ConnectionProfile, ConnectionSource, SslMode, TlsOptions};
 use crate::secrets::{SecretKind, SecretStore};
 use crate::ssh_tunnel::{self, KnownHosts, SshTunnel, SshTunnelAuth, SshTunnelConfig};
 
@@ -38,6 +38,9 @@ pub struct SessionSettings {
 pub struct Target {
     config: Config,
     tls: Option<MakeRustlsConnect>,
+    /// The profile's TLS options, for the client tools (`pg_dump`) that
+    /// make connections of their own.
+    pub tls_options: TlsOptions,
     pub default_db: String,
     pub settings: SessionSettings,
 }
@@ -226,6 +229,7 @@ impl Target {
         Ok(Target {
             config,
             tls: tls::connector(&profile.tls)?,
+            tls_options: profile.tls.clone(),
             default_db,
             settings: SessionSettings {
                 statement_timeout_ms: profile.advanced.statement_timeout_ms,
@@ -238,6 +242,12 @@ impl Target {
                 pooler_mode: profile.advanced.pooler_mode,
             },
         })
+    }
+
+    /// The driver config: hosts (a tunnel's local end included), ports,
+    /// user and password.
+    pub fn config(&self) -> &Config {
+        &self.config
     }
 
     /// Opens a client on `database` and applies the session settings.

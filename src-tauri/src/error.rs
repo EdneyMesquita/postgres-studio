@@ -24,6 +24,10 @@ pub enum AppError {
     /// as it is, so the message carries no prefix.
     #[error("{0}")]
     PasswordMissing(String),
+    /// A client tool (`pg_dump`, `pg_restore`, `psql`) couldn't run or
+    /// failed; its own words are shown as they are.
+    #[error("{0}")]
+    Tool(String),
     /// Assistant failures are shown to the user as they are, so the message
     /// carries no prefix.
     #[error("{0}")]
