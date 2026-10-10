@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { clearPropertyCache } from "../lib/cypherCompletion";
 import { graphApi } from "../lib/tauri";
 import type { GraphCatalog } from "../types/pg";
 import { databaseKey, useExplorerStore } from "./explorerStore";
@@ -63,6 +64,8 @@ export const useGraphStore = create<GraphState>((set, get) => {
 
     refresh: async (connectionId, sessionId, database) => {
       if (!get().nodes[databaseKey(connectionId, database)]) return;
+      // the sampled property names may have changed along with the graph
+      clearPropertyCache();
       await load(connectionId, sessionId, database);
     },
 
