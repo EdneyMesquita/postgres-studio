@@ -332,6 +332,66 @@ mod live_tests {
         let run = run::run_sql(&c, "rollback", opts(), None).await;
         assert_eq!(run.transaction, run::TxState::Idle);
 
+        // A capped query reads only what is kept, through a cursor: fast on
+        // a million rows, and marked as having more.
+        let started = std::time::Instant::now();
+        let run = run::run_sql(
+            &c,
+            "select g from generate_series(1, 1000000) g",
+            opts(),
+            None,
+        )
+        .await;
+        let r = &run.results[0];
+        assert!(r.error.is_none(), "{:?}", r.error);
+        assert_eq!(r.rows.len(), 100);
+        assert!(r.truncated);
+        assert_eq!(r.row_count, 100);
+        assert!(
+            started.elapsed().as_millis() < 500,
+            "took {:?}",
+            started.elapsed()
+        );
+        assert_eq!(run.transaction, run::TxState::Idle);
+        // Not a plain query: runs without the cursor and keeps its rows.
+        let run = run::run_sql(
+            &c,
+            "create temp table cursor_probe (n int); insert into cursor_probe values (1), (2) returning n",
+            opts(),
+            None,
+        )
+        .await;
+        assert_eq!(run.results[1].rows.len(), 2, "{:?}", run.results[1].error);
+        // Inside the user's transaction: a cursor query leaves it open and
+        // usable; one that fails leaves it aborted, as without the cursor.
+        let run = run::run_sql(
+            &c,
+            "begin; select * from cursor_probe; select 1",
+            opts(),
+            None,
+        )
+        .await;
+        assert!(
+            run.results.iter().all(|r| r.error.is_none()),
+            "{:?}",
+            run.results
+        );
+        assert_eq!(run.results[1].rows.len(), 2);
+        assert_eq!(run.transaction, run::TxState::Active);
+        let run = run::run_sql(&c, "select n / 0 from cursor_probe", opts(), None).await;
+        assert_eq!(
+            run.results[0].error.as_ref().unwrap().code.as_deref(),
+            Some("22012")
+        );
+        assert_eq!(run.transaction, run::TxState::Failed);
+        let run = run::run_sql(&c, "rollback", opts(), None).await;
+        assert_eq!(run.transaction, run::TxState::Idle);
+        // A syntax error still points at its place in the user's text.
+        let run = run::run_sql(&c, "select nope from", opts(), None).await;
+        let err = run.results[0].error.as_ref().unwrap();
+        assert_eq!(err.code.as_deref(), Some("42601"));
+        assert_eq!(err.position, Some(17));
+
         // types the grid shows, as text
         let run = run::run_sql(&c, "select * from type_samples order by id", opts(), None).await;
         let r = &run.results[0];

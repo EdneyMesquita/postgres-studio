@@ -30,7 +30,8 @@ function formatDuration(ms: number): string {
 /** What a statement did, the way psql reports it. */
 export function statementSummary(r: StatementResult): string {
   if (r.error) return `${r.command || "Statement"} failed`;
-  if (r.returnsRows) return `${formatInt(r.rowCount)} ${r.rowCount === 1 ? "row" : "rows"}`;
+  // Truncated: only the rows kept were read, so the total isn't known.
+  if (r.returnsRows) return `${formatInt(r.rowCount)}${r.truncated ? "+" : ""} ${r.rowCount === 1 && !r.truncated ? "row" : "rows"}`;
   if (["INSERT", "UPDATE", "DELETE", "MERGE", "COPY"].includes(r.command)) return `${r.command} ${formatInt(r.rowCount)}`;
   return r.command || "OK";
 }
@@ -166,7 +167,7 @@ export function ConsoleOutputPane({ tab, session }: { tab: Tab; session: Console
           <>
             {currentResult.truncated && (
               <p className="flex-none border-b border-line-soft bg-warn/8 px-3 py-1 text-xs text-fg-2">
-                Showing the first {formatInt(currentResult.rows.length)} of {formatInt(currentResult.rowCount)} rows. Add a LIMIT, or export the query for all of them.
+                Showing the first {formatInt(currentResult.rows.length)} rows; there are more. Add a LIMIT, or export the query for all of them.
               </p>
             )}
             <ResultGrid

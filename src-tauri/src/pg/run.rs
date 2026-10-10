@@ -94,8 +94,11 @@ pub async fn run_sql(
         None => split::split(sql),
     };
     let mut results = Vec::new();
+    // Probed once for the cursor path and kept while only cursor queries
+    // run (they leave it as it was); anything else makes it unknown again.
+    let mut tx = None;
     for (index, stmt) in statements.iter().enumerate() {
-        let result = run_statement(client, sql, index, stmt, options).await;
+        let result = run_statement(client, sql, index, stmt, options, &mut tx).await;
         let failed = result.error.is_some();
         results.push(result);
         if failed {
@@ -121,6 +124,7 @@ async fn run_statement(
     index: usize,
     stmt: &Statement,
     options: RunOptions,
+    tx: &mut Option<TxState>,
 ) -> StatementResult {
     let started = Instant::now();
     let mut result = StatementResult {
@@ -164,6 +168,29 @@ async fn run_statement(
             result.returns_rows = !result.columns.is_empty();
         }
     }
+
+    // A query that returns rows reads only what is kept, through a cursor,
+    // instead of letting the server send every row only to drop the rest.
+    if result.returns_rows && cursorable(&stmt.text) {
+        match fetch_through_cursor(client, &stmt.text, &mut result, options, tx).await {
+            CursorOutcome::Done => {
+                result.elapsed_ms = started.elapsed().as_millis() as u64;
+                return result;
+            }
+            CursorOutcome::Failed(db) => {
+                result.error = Some(db);
+                result.elapsed_ms = started.elapsed().as_millis() as u64;
+                return result;
+            }
+            // The cursor was refused before the query ran: run it plainly,
+            // which also reports the error at the right position.
+            CursorOutcome::NotStarted => {
+                result.rows.clear();
+                result.truncated = false;
+            }
+        }
+    }
+    *tx = None;
 
     let text = if options.wrap_read_only {
         format!("BEGIN READ ONLY;\n{};\nCOMMIT", stmt.text)
@@ -236,6 +263,174 @@ async fn collect(
         }
     }
     Ok(())
+}
+
+enum CursorOutcome {
+    Done,
+    /// The query ran and failed: a genuine error, reported as it is.
+    Failed(DbError),
+    /// Nothing ran (the cursor itself was refused).
+    NotStarted,
+}
+
+const CURSOR: &str = "postgres_studio_rows";
+
+/// Whether a statement can sit behind `DECLARE ... CURSOR FOR`: a plain
+/// query (SELECT, VALUES, TABLE, or WITH ... SELECT without data-modifying
+/// parts). A mistake here only costs a second try, plainly.
+pub(crate) fn cursorable(text: &str) -> bool {
+    let body = strip_comments(text);
+    let lower = body.to_ascii_lowercase();
+    let first = lower
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .find(|w| !w.is_empty())
+        .unwrap_or_default();
+    match first {
+        "select" | "values" | "table" => !has_word(&lower, "into"),
+        "with" => !["insert", "update", "delete", "merge", "into"]
+            .iter()
+            .any(|w| has_word(&lower, w)),
+        _ => false,
+    }
+}
+
+/// `word` as a whole word outside string literals and quoted names.
+fn has_word(lower: &str, word: &str) -> bool {
+    let mut plain = String::with_capacity(lower.len());
+    let mut quote: Option<char> = None;
+    for c in lower.chars() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '\'' || c == '"' => quote = Some(c),
+            None => plain.push(c),
+        }
+    }
+    plain
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .any(|w| w == word)
+}
+
+/// Runs a query through a cursor and fetches one row past the limit, all
+/// in one round trip. Outside a transaction it opens and commits its own;
+/// inside the user's, it works under a savepoint so a failure doesn't
+/// abort theirs.
+async fn fetch_through_cursor(
+    client: &PgClient,
+    query: &str,
+    result: &mut StatementResult,
+    options: RunOptions,
+    tx: &mut Option<TxState>,
+) -> CursorOutcome {
+    let in_transaction = match options.pooler_mode {
+        // A pooler gives each statement its own transaction anyway.
+        true => false,
+        false => {
+            let state = match *tx {
+                Some(state) => state,
+                None => transaction_state(client).await,
+            };
+            *tx = Some(state);
+            match state {
+                TxState::Active => true,
+                // Everything fails there until ROLLBACK: let the plain run say so.
+                TxState::Failed => return CursorOutcome::NotStarted,
+                TxState::Idle | TxState::Unknown => false,
+            }
+        }
+    };
+    let query = query.trim_end().trim_end_matches(';');
+    let fetch = options.row_limit.saturating_add(1);
+    // A newline before each `;`: the query may end in a `--` comment.
+    let body = format!(
+        "DECLARE {CURSOR} NO SCROLL CURSOR FOR {query}\n;\nFETCH {fetch} FROM {CURSOR};\nCLOSE {CURSOR}"
+    );
+    let (open, close, undo) = if in_transaction {
+        (
+            "SAVEPOINT postgres_studio_fetch",
+            "RELEASE SAVEPOINT postgres_studio_fetch",
+            "ROLLBACK TO SAVEPOINT postgres_studio_fetch; RELEASE SAVEPOINT postgres_studio_fetch",
+        )
+    } else if options.wrap_read_only {
+        ("BEGIN READ ONLY", "COMMIT", "ROLLBACK")
+    } else {
+        ("BEGIN", "COMMIT", "ROLLBACK")
+    };
+    let text = format!("{open};\n{body};\n{close}");
+
+    // The query is under way once the opening statement and DECLARE have
+    // both completed: an error after that is the query's own, and running it
+    // again would repeat whatever it did (and undo a cancel).
+    let mut completions = 0;
+    let mut started = false;
+    let outcome: Result<(), tokio_postgres::Error> = async {
+        let stream = client.client.simple_query_raw(&text).await?;
+        pin_mut!(stream);
+        while let Some(message) = stream.try_next().await? {
+            match message {
+                SimpleQueryMessage::RowDescription(cols) => {
+                    started = true;
+                    if result.columns.is_empty() {
+                        result.columns = cols
+                            .iter()
+                            .map(|c| ResultColumn {
+                                name: c.name().to_string(),
+                                type_name: "unknown".to_string(),
+                                type_oid: 0,
+                            })
+                            .collect();
+                    }
+                }
+                SimpleQueryMessage::Row(row) => {
+                    if result.rows.len() < options.row_limit {
+                        result.rows.push(
+                            (0..row.len())
+                                .map(|i| row.get(i).map(str::to_string))
+                                .collect(),
+                        );
+                    } else {
+                        result.truncated = true;
+                    }
+                }
+                SimpleQueryMessage::CommandComplete(_) => {
+                    completions += 1;
+                    if completions >= 2 {
+                        started = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    .await;
+
+    match outcome {
+        Ok(()) => {
+            // Rows kept; `truncated` says more exist, not how many.
+            result.row_count = result.rows.len() as u64;
+            CursorOutcome::Done
+        }
+        Err(e) => {
+            // The transaction this opened is undone either way. Inside the
+            // user's, a query that ran and failed leaves it aborted, as it
+            // would without the cursor; only a refused cursor is undone.
+            if !in_transaction || !started {
+                let _ = client.client.batch_execute(undo).await;
+            }
+            let db = DbError::from_pg(&e);
+            if started || db.is_cancel() {
+                // Inside the user's transaction the failure aborted it;
+                // outside, the one this opened was rolled back.
+                if in_transaction {
+                    *tx = Some(TxState::Failed);
+                }
+                CursorOutcome::Failed(db)
+            } else {
+                CursorOutcome::NotStarted
+            }
+        }
+    }
 }
 
 /// Whether the client sits in a transaction block: inside one, `now()`
@@ -580,6 +775,31 @@ pub async fn explain(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn knows_which_statements_a_cursor_can_hold() {
+        for q in [
+            "select * from orders",
+            "  -- leading comment\nSELECT 1",
+            "with t as (select 1) select * from t",
+            "values (1), (2)",
+            "table orders",
+            "select 'insert into' as label",
+        ] {
+            assert!(cursorable(q), "{q}");
+        }
+        for q in [
+            "insert into t values (1) returning *",
+            "select * into newtable from orders",
+            "with gone as (delete from t returning *) select * from gone",
+            "explain select 1",
+            "show work_mem",
+            "update t set a = 1 returning a",
+        ] {
+            assert!(!cursorable(q), "{q}");
+        }
+    }
+
     use super::*;
 
     #[test]
