@@ -22,7 +22,7 @@ See the [README](README.md#development) for prerequisites and how to run the app
    npm run build   # runs tsc, so this also type-checks the frontend
    ```
 
-4. Open a pull request against `main`. CI runs the same checks above (`fmt`, `clippy`, `cargo test`, the frontend build) automatically, and at least one review is required before merging - both are enforced by branch protection, not just convention.
+4. Open a pull request against `main`. CI runs the same checks above (`fmt`, `clippy`, `cargo test`, the frontend build) automatically and must pass before a change is merged; every pull request is reviewed by the maintainer.
 
 ## Scope of tests in CI
 
@@ -30,7 +30,7 @@ Integration tests that talk to a live PostgreSQL server are marked `#[ignore]` a
 
 ## Reporting bugs / requesting features
 
-Open an issue using the appropriate template. For security-sensitive reports (e.g. a way to bypass the secret store or SSH host-key checks), please don't open a public issue - email the address in [SECURITY.md](SECURITY.md) instead.
+Open an issue using the appropriate template. For security-sensitive reports (e.g. a way to bypass the secret store or SSH host-key checks), please don't open a public issue - use [private vulnerability reporting](https://github.com/EdneyMesquita/postgres-studio/security/advisories/new) or email the address in [SECURITY.md](SECURITY.md) instead.
 
 ## Code style
 

@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-Please email **edneyphp@gmail.com** rather than opening a public issue. Include what you found, how to reproduce it, and its impact if you can. This is a young, single-maintainer project without a formal SLA, but reports will be acknowledged and fixed as quickly as reasonably possible.
+Please report it privately - through [GitHub private vulnerability reporting](https://github.com/EdneyMesquita/postgres-studio/security/advisories/new) or by email to **edneyphp@gmail.com** - rather than opening a public issue. Include what you found, how to reproduce it, and its impact if you can. This is a young, single-maintainer project without a formal SLA, but reports will be acknowledged and fixed as quickly as reasonably possible.
 
 ## How secrets are stored
 
