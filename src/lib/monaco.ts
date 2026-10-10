@@ -1,7 +1,7 @@
 import { loader } from "@monaco-editor/react";
-import * as monaco from "monaco-editor";
+import type * as MonacoFull from "monaco-editor";
+import * as slim from "./monacoEditor";
 import EditorWorker from "monaco-editor/editor/editor.worker.js?worker";
-import JsonWorker from "monaco-editor/language/json/json.worker.js?worker";
 import { registerSqlCompletion } from "./sqlCompletion";
 import { registerStudioLanguages } from "./studioLanguages";
 
@@ -11,12 +11,14 @@ import { registerStudioLanguages } from "./studioLanguages";
 // `exports` map is `"./*.js": "./esm/vs/*.js"`, so subpaths must omit the
 // `esm/vs` prefix (and keep the `.js` extension) or resolution fails.
 self.MonacoEnvironment = {
-  getWorker(_workerId: string, label: string) {
-    if (label === "json") return new JsonWorker();
+  getWorker() {
     return new EditorWorker();
   },
 };
 
+// Typed as the full package, which also lists the language services this
+// build leaves out; the editor only reaches for `editor` and `languages`.
+const monaco = slim as unknown as typeof MonacoFull;
 loader.config({ monaco });
 registerStudioLanguages(monaco);
 registerSqlCompletion(monaco);
@@ -122,7 +124,7 @@ let ownKeys = 0;
  * scope makes the binding apply only while this editor has focus.
  */
 export function addEditorCommand(
-  editor: monaco.editor.IStandaloneCodeEditor,
+  editor: MonacoFull.editor.IStandaloneCodeEditor,
   keybinding: number,
   handler: () => void,
   when?: string,
