@@ -1,6 +1,40 @@
-import { CircleCheck, TriangleAlert } from "lucide-react";
+import { CircleCheck, Copy, TriangleAlert } from "lucide-react";
 import type { ReactNode } from "react";
+import { toast } from "sonner";
 import type { PgTool } from "@/types/pg";
+import { hostOs, installHint } from "./installHint";
+
+/** The newest PostgreSQL release, for a hint when no server version is known. */
+const NEWEST_MAJOR = 18;
+
+/** How to install the client tools here, with the command to copy. */
+function InstallHelp({ major }: { major: number }) {
+  const hint = installHint(hostOs(), major);
+  return (
+    <div className="flex flex-col gap-1.5 pl-5 text-sm text-fg-2">
+      <span>{hint.text}</span>
+      {hint.command && (
+        <span className="flex items-center gap-2">
+          <code className="rounded-sm bg-fg/7 px-1.5 py-0.5 font-data text-xs text-fg">{hint.command}</code>
+          <button
+            type="button"
+            className="grid size-6 place-items-center rounded-sm text-fg-3 hover:bg-hover hover:text-fg"
+            title="Copy the command"
+            aria-label="Copy the command"
+            onClick={() =>
+              void navigator.clipboard.writeText(hint.command!).then(
+                () => toast.success("Copied the command"),
+                (e) => toast.error("Couldn't copy", { description: String(e) }),
+              )
+            }
+          >
+            <Copy className="size-3.5" />
+          </button>
+        </span>
+      )}
+    </div>
+  );
+}
 
 interface ToolStatusProps {
   /** "pg_dump" */
@@ -18,11 +52,14 @@ export function ToolStatus({ name, found, searched, needsMajor }: ToolStatusProp
   const best = found[0];
   if (!best) {
     return (
-      <Notice tone="danger">
-        <span>
-          {name} not found - install the PostgreSQL client tools. Looked in {searched.join(", ")}.
-        </span>
-      </Notice>
+      <div className="flex flex-col gap-1.5">
+        <Notice tone="danger">
+          <span>
+            {name} not found - install the PostgreSQL client tools. Looked in {searched.join(", ")}.
+          </span>
+        </Notice>
+        <InstallHelp major={needsMajor ?? NEWEST_MAJOR} />
+      </div>
     );
   }
   const tooOld = needsMajor != null && best.major < needsMajor;
@@ -43,6 +80,7 @@ export function ToolStatus({ name, found, searched, needsMajor }: ToolStatusProp
           </span>
         </Notice>
       )}
+      {tooOld && <InstallHelp major={needsMajor} />}
     </div>
   );
 }
