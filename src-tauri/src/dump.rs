@@ -1414,26 +1414,52 @@ mod tests {
         assert!(has(&args, "--dbname=dbname='shop'"));
     }
 
-    fn config(host: &str, hostaddr: Option<&str>, port: u16) -> tokio_postgres::Config {
-        let mut config = tokio_postgres::Config::new();
-        config.host(host).port(port).user("app").password("s3cret");
-        if let Some(addr) = hostaddr {
-            config.hostaddr(addr.parse().unwrap());
+    fn profile(uri: &str, ssl_mode: SslMode) -> crate::models::ConnectionProfile {
+        crate::models::ConnectionProfile {
+            id: "id".into(),
+            name: "prod".into(),
+            color: None,
+            source: crate::models::ConnectionSource::Uri { uri: uri.into() },
+            database: None,
+            username: None,
+            has_password: false,
+            tls: crate::models::TlsOptions {
+                ssl_mode,
+                ..Default::default()
+            },
+            ssh_tunnel: None,
+            advanced: Default::default(),
+            created_at: String::new(),
+            updated_at: String::new(),
         }
-        config
+    }
+
+    fn conn_of(uri: &str, tunnel_port: Option<u16>) -> PgConn {
+        let target = Target::from_profile(
+            &profile(uri, SslMode::VerifyFull),
+            &crate::secrets::InMemoryStore::new(),
+            tunnel_port,
+        )
+        .unwrap();
+        PgConn::from_target(&target)
     }
 
     #[test]
     fn a_tunnel_is_reached_at_its_local_port() {
-        let conn = PgConn {
-            host: Some("db.internal".into()),
-            hostaddr: Some("127.0.0.1".into()),
-            port: Some("50123".into()),
-            user: Some("app".into()),
-            password: Some("s3cret".into()),
-            ssl_mode: SslMode::VerifyFull,
-            ..Default::default()
-        };
+        let direct = conn_of("postgres://app:s3cret@db.internal:5432/shop", None);
+        assert_eq!(direct.host.as_deref(), Some("db.internal"));
+        assert_eq!(direct.port.as_deref(), Some("5432"));
+        assert_eq!(direct.hostaddr, None);
+        assert_eq!(direct.user.as_deref(), Some("app"));
+        assert_eq!(direct.password.as_deref(), Some("s3cret"));
+
+        // through the tunnel: the real name (for the certificate check),
+        // the tunnel's local end for the bytes
+        let conn = conn_of("postgres://app:s3cret@db.internal:5432/shop", Some(50123));
+        assert_eq!(conn.host.as_deref(), Some("db.internal"));
+        assert_eq!(conn.hostaddr.as_deref(), Some("127.0.0.1"));
+        assert_eq!(conn.port.as_deref(), Some("50123"));
+
         let env = conn.env("shop", 17);
         let get = |k: &str| {
             env.iter()
@@ -1448,17 +1474,8 @@ mod tests {
         assert_eq!(get("PGSSLMODE"), Some("verify-full"));
         // no CA named: libpq 16+ is told to use the system's
         assert_eq!(get("PGSSLROOTCERT"), Some("system"));
-        assert_eq!(
-            conn.env("shop", 15)
-                .iter()
-                .filter(|(k, _)| *k == "PGSSLROOTCERT")
-                .count(),
-            0
-        );
-        // and the config the session uses says the same
-        let cfg = config("db.internal", Some("127.0.0.1"), 50123);
-        assert_eq!(cfg.get_ports(), [50123]);
-        assert_eq!(cfg.get_hostaddrs().len(), 1);
+        let old = conn.env("shop", 15);
+        assert!(!old.iter().any(|(k, _)| *k == "PGSSLROOTCERT"));
     }
 
     #[test]
