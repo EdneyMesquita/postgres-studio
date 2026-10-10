@@ -1148,6 +1148,24 @@ pub async fn graph_catalog(
     .await
 }
 
+/// The property names the rows of one graph label carry, for completion.
+#[tauri::command]
+pub async fn graph_label_properties(
+    state: State<'_, AppState>,
+    session_id: String,
+    database: String,
+    graph: String,
+    label: String,
+    edge: bool,
+) -> AppResult<Vec<String>> {
+    let op = Op::new("graphLabelProperties", &database, Some(&graph));
+    on_session(&state, &session_id, op, async |s| {
+        let client = s.client(&database).await?;
+        graph::label_properties(&client, &graph, &label, edge).await
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;

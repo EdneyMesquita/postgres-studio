@@ -71,6 +71,7 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
         commands::assistant_workdir,
         commands::open_log_dir,
         commands::graph_catalog,
+        commands::graph_label_properties,
     ])
 }
 

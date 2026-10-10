@@ -6,6 +6,7 @@ import type { Tab } from "./sessionsStore";
 import { useUiStore } from "./uiStore";
 import { useExplorerStore } from "./explorerStore";
 import { clearColumnCache } from "../lib/sqlCompletion";
+import { useGraphStore } from "./graphStore";
 import type { ExplainResult, SqlRun, TxState } from "../types/pg";
 
 /** Quotes an identifier only when it needs it. */
@@ -85,6 +86,9 @@ export function currentConsoleTarget() {
 /** Statements that change what the explorer lists. */
 const DDL = /^(CREATE|DROP|ALTER|COMMENT|TRUNCATE|REFRESH|GRANT|REVOKE)\b/;
 
+/** Calls that add or drop AGE graphs and labels, which the explorer lists under Graphs. */
+const GRAPH_CHANGE = /\b(?:create_graph|drop_graph|alter_graph|create_vlabel|create_elabel|drop_label)\s*\(|\bcypher\s*\([\s\S]*\b(?:CREATE|MERGE)\b/i;
+
 interface ConsoleState {
   /** One console per tab, keyed by tab id. */
   consoles: Record<string, ConsoleSession>;
@@ -153,6 +157,10 @@ export const useConsoleStore = create<ConsoleState>((set, get) => {
                 : { kind: "messages" };
         patch(key, { running: false, executionId: null, run, output, tx: run.transaction });
         refreshExplorer(key, run);
+        if (GRAPH_CHANGE.test(sql)) {
+          const tab = useSessionsStore.getState().tabs.find((t) => t.id === key);
+          if (tab) void useGraphStore.getState().refresh(tab.connection.id, sessionId, tab.database);
+        }
       } catch (e) {
         if (stillCurrent()) patch(key, { running: false, executionId: null, error: String(e) });
       }

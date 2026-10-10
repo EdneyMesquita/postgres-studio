@@ -117,6 +117,40 @@ pub async fn graph_catalog(client: &PgClient) -> AppResult<GraphCatalog> {
     })
 }
 
+/// The property names the rows of a label carry, from a sample of them, for
+/// completion: AGE keeps properties in one agtype value per row and has no
+/// catalog of their names. Reading them needs the library loaded in this
+/// connection, which is allowed only to a superuser or where the server
+/// provides it as a plugin; an error here just means no suggestions.
+pub async fn label_properties(
+    client: &PgClient,
+    graph: &str,
+    label: &str,
+    edge: bool,
+) -> AppResult<Vec<String>> {
+    client.client.batch_execute("LOAD 'age'").await?;
+    let quoted = format!("`{}`", label.replace('`', "``"));
+    let pattern = if edge {
+        format!("()-[n:{quoted}]->()")
+    } else {
+        format!("(n:{quoted})")
+    };
+    // a tag the label can't contain, so it can't end the body early
+    let mut tag = String::from("$cy$");
+    while label.contains(&tag) {
+        tag.insert(3, 'y');
+    }
+    let sql = format!(
+        // agtype to text drops the quotes of a string
+        "SELECT coalesce(json_agg(DISTINCT k ORDER BY k), '[]')
+         FROM (SELECT v::text AS k
+               FROM ag_catalog.cypher({graph}, {tag} MATCH {pattern} WITH n LIMIT 200 UNWIND keys(n) AS k RETURN k {tag})
+                    AS (v ag_catalog.agtype)) names",
+        graph = super::literal(graph),
+    );
+    Ok(json_query(client, &sql).await?.unwrap_or_default())
+}
+
 /// SQL/PGQ property graphs are relations of kind `g`. Their elements live in
 /// `pg_propgraph_element`; that catalog has never been in a release, so
 /// reading it is best effort and its absence only leaves the list bare.
@@ -262,6 +296,22 @@ mod live_tests {
             graph.labels
         );
         assert!(age_installed(&c).await.unwrap());
+        assert_eq!(
+            label_properties(&c, "studio_test", "Person", false)
+                .await
+                .unwrap(),
+            ["age", "name"]
+        );
+        assert_eq!(
+            label_properties(&c, "studio_test", "KNOWS", true)
+                .await
+                .unwrap(),
+            ["since"]
+        );
+        assert!(label_properties(&c, "studio_test", "Nope", false)
+            .await
+            .unwrap()
+            .is_empty());
         let schemas = catalog::list_schemas(&c).await.unwrap();
         for hidden in ["ag_catalog", "studio_test"] {
             let schema = schemas.iter().find(|s| s.name == hidden).unwrap();
