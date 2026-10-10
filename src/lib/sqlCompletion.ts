@@ -180,7 +180,7 @@ export function registerSqlCompletion(monaco: typeof Monaco) {
         if (operator && catalog?.vector) {
           const opRange = { ...range, startColumn: range.endColumn - operator[0].length };
           return {
-            suggestions: VECTOR_OPERATORS.map((o) => ({
+            suggestions: VECTOR_OPERATORS.map((o, i) => ({
               label: { label: o.op, description: o.name },
               kind: Kind.Operator,
               insertText: o.op,
@@ -188,7 +188,7 @@ export function registerSqlCompletion(monaco: typeof Monaco) {
               detail: o.name,
               documentation: o.detail,
               range: opRange,
-              sortText: `0${o.op}`,
+              sortText: `0${i}`,
             })),
           };
         }
