@@ -7,9 +7,11 @@ import { AppErrorBoundary } from "./components/layout/AppErrorBoundary";
 import "./index.css";
 import { installErrorLogging } from "./lib/log";
 import { applyTheme, getStoredTheme } from "./lib/themes";
+import { rememberWindowSize } from "./lib/windowSize";
 
 installErrorLogging();
 applyTheme(getStoredTheme());
+rememberWindowSize();
 
 /** Marks the first commit, so startup can be measured (scripts/bench.mjs, the README). */
 function MountMark() {

@@ -18,6 +18,7 @@ mod secrets;
 mod sidebar_layout;
 mod ssh_tunnel;
 mod state;
+mod window_size;
 
 use tauri::Manager;
 use tauri_plugin_window_state::StateFlags;
@@ -76,6 +77,7 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
         commands::assistant_answer,
         commands::assistant_workdir,
         commands::open_log_dir,
+        window_size::remember_window_size,
         dump::pg_tools_info,
         dump::backup_format,
         dump::dump_database,
@@ -113,7 +115,7 @@ pub fn run() {
         // it has painted, so it never opens on a blank white frame.
         .plugin(
             tauri_plugin_window_state::Builder::default()
-                .with_state_flags(StateFlags::all() - StateFlags::VISIBLE)
+                .with_state_flags(window_state_flags())
                 .build(),
         )
         .setup(|app| {
@@ -132,6 +134,10 @@ pub fn run() {
 }
 
 fn setup<R: tauri::Runtime>(app: &mut tauri::App<R>) -> Result<(), Box<dyn std::error::Error>> {
+    let config_dir = app.path().app_config_dir()?;
+    if let Some(window) = app.get_webview_window("main") {
+        window_size::restore(&window, &config_dir);
+    }
     // The page shows the window as soon as it paints. Should it never get
     // there (a broken bundle, a hung webview), show it anyway.
     if let Some(window) = app.get_webview_window("main") {
@@ -143,7 +149,32 @@ fn setup<R: tauri::Runtime>(app: &mut tauri::App<R>) -> Result<(), Box<dyn std::
             }
         });
     }
-    let config_dir = app.path().app_config_dir()?;
+    // Saved on close by the plugin, and also once a move or resize settles,
+    // so a crash or a killed process doesn't lose the window's last place.
+    if let Some(window) = app.get_webview_window("main") {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use tauri_plugin_window_state::AppHandleExt;
+        let handle = app.handle().clone();
+        let latest = std::sync::Arc::new(AtomicU64::new(0));
+        window.on_window_event(move |event| {
+            if matches!(
+                event,
+                tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_)
+            ) {
+                let mine = latest.fetch_add(1, Ordering::SeqCst) + 1;
+                let latest = latest.clone();
+                let handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                    if latest.load(Ordering::SeqCst) == mine {
+                        if let Err(e) = handle.save_window_state(window_state_flags()) {
+                            log::warn!("couldn't save the window's place: {e}");
+                        }
+                    }
+                });
+            }
+        });
+    }
     let state =
         AppState::init(&config_dir).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     app.manage(state);
@@ -161,4 +192,10 @@ fn setup<R: tauri::Runtime>(app: &mut tauri::App<R>) -> Result<(), Box<dyn std::
         workdir,
     ));
     Ok(())
+}
+
+/// What the plugin keeps between runs: not visibility (the window starts
+/// hidden and the page shows it) and not the size (window_size.rs).
+fn window_state_flags() -> StateFlags {
+    StateFlags::all() - StateFlags::VISIBLE - StateFlags::SIZE
 }
