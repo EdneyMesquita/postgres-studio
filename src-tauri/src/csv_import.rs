@@ -789,6 +789,7 @@ mod live_tests {
 
     async fn run(
         client: &PgClient,
+        table: &str,
         path: &Path,
         mapping: &[Option<String>],
         options: &CsvOptions,
@@ -796,7 +797,7 @@ mod live_tests {
         import_file(
             client,
             "public",
-            "agent_scripts_people",
+            table,
             path,
             mapping,
             options,
@@ -807,23 +808,26 @@ mod live_tests {
         .await
     }
 
-    async fn reset(client: &PgClient) {
+    async fn reset(client: &PgClient, table: &str) {
         client
             .client
-            .batch_execute(
-                "DROP TABLE IF EXISTS public.agent_scripts_people; \
-                 CREATE TABLE public.agent_scripts_people \
-                 (id int primary key, name text, note text, qty int, \"Odd \"\"Col\" text)",
-            )
+            .batch_execute(&format!(
+                "DROP TABLE IF EXISTS public.{table}; \
+                 CREATE TABLE public.{table} \
+                 (id int primary key, name text, note text, qty int, \"Odd \"\"Col\" text)"
+            ))
             .await
             .unwrap();
     }
 
-    async fn rows(client: &PgClient) -> Vec<(i32, Option<String>, Option<String>, Option<i32>)> {
+    async fn rows(
+        client: &PgClient,
+        table: &str,
+    ) -> Vec<(i32, Option<String>, Option<String>, Option<i32>)> {
         client
             .client
             .query(
-                "SELECT id, name, note, qty FROM public.agent_scripts_people ORDER BY id",
+                &format!("SELECT id, name, note, qty FROM public.{table} ORDER BY id"),
                 &[],
             )
             .await
@@ -836,18 +840,19 @@ mod live_tests {
     #[tokio::test]
     #[ignore]
     async fn live_imports_quotes_newlines_and_nulls() {
+        const TABLE: &str = "agent_scripts_people";
         let s = live_session().await;
         let client = s.pinned("import:test", "shop").await.unwrap();
-        reset(&client).await;
+        reset(&client, TABLE).await;
         let path = file("people.csv", CSV);
         let mapping = cols(&[Some("id"), Some("name"), Some("note"), Some("qty")]);
 
         // As the server reads it: empty is NULL, a quoted empty is not.
-        let done = run(&client, &path, &mapping, &CsvOptions::default())
+        let done = run(&client, TABLE, &path, &mapping, &CsvOptions::default())
             .await
             .unwrap();
         assert_eq!(done.rows, 4);
-        let got = rows(&client).await;
+        let got = rows(&client, TABLE).await;
         assert_eq!(got[0].2.as_deref(), Some("said \"hi\"\nand left"));
         assert_eq!(got[1].1.as_deref(), Some("Bo; the, third"));
         assert_eq!((got[1].2.clone(), got[1].3), (None, None));
@@ -855,35 +860,39 @@ mod live_tests {
         assert_eq!(got[3].1.as_deref(), Some(""));
 
         // With a NULL text, an empty field is just empty.
-        reset(&client).await;
+        reset(&client, TABLE).await;
         let options = CsvOptions {
             null_string: "\\N".to_string(),
             ..Default::default()
         };
         let nulls = file("nulls.csv", b"id,name,note,qty\n1,Ann,\\N,\\N\n2,Bo,,3\n");
-        run(&client, &nulls, &mapping, &options).await.unwrap();
-        let got = rows(&client).await;
+        run(&client, TABLE, &nulls, &mapping, &options)
+            .await
+            .unwrap();
+        let got = rows(&client, TABLE).await;
         assert_eq!((got[0].2.clone(), got[0].3), (None, None));
         assert_eq!(got[1].2.as_deref(), Some(""));
         std::fs::remove_file(nulls).unwrap();
 
         // Skipping a column and mapping to an oddly named one: the rewrite path.
-        reset(&client).await;
+        reset(&client, TABLE).await;
         let mapping = cols(&[Some("id"), None, Some("note"), Some("Odd \"Col")]);
         let options = CsvOptions {
             null_string: "\\N".to_string(),
             ..Default::default()
         };
-        let done = run(&client, &path, &mapping, &options).await.unwrap();
+        let done = run(&client, TABLE, &path, &mapping, &options)
+            .await
+            .unwrap();
         assert_eq!(done.rows, 4);
-        let got = rows(&client).await;
+        let got = rows(&client, TABLE).await;
         assert_eq!(got[0].2.as_deref(), Some("said \"hi\"\nand left"));
         assert_eq!(got[2].2, None);
         assert!(got.iter().all(|r| r.1.is_none()));
         let odd: Vec<Option<String>> = client
             .client
             .query(
-                "SELECT \"Odd \"\"Col\" FROM public.agent_scripts_people ORDER BY id",
+                &format!("SELECT \"Odd \"\"Col\" FROM public.{TABLE} ORDER BY id"),
                 &[],
             )
             .await
@@ -896,7 +905,7 @@ mod live_tests {
         std::fs::remove_file(path).unwrap();
 
         // Another delimiter, no header.
-        reset(&client).await;
+        reset(&client, TABLE).await;
         let path = file("people.psv", b"7|Dee|n|1\n8|Eve|\\N|2\n");
         let options = CsvOptions {
             delimiter: "|".to_string(),
@@ -906,18 +915,21 @@ mod live_tests {
         };
         let mapping = cols(&[Some("id"), Some("name"), Some("note"), Some("qty")]);
         assert_eq!(
-            run(&client, &path, &mapping, &options).await.unwrap().rows,
+            run(&client, TABLE, &path, &mapping, &options)
+                .await
+                .unwrap()
+                .rows,
             2
         );
         assert_eq!(
-            rows(&client).await[1],
+            rows(&client, TABLE).await[1],
             (8, Some("Eve".into()), None, Some(2))
         );
         std::fs::remove_file(path).unwrap();
 
         client
             .client
-            .batch_execute("DROP TABLE public.agent_scripts_people")
+            .batch_execute(&format!("DROP TABLE public.{TABLE}"))
             .await
             .unwrap();
         s.shutdown().await;
@@ -926,31 +938,32 @@ mod live_tests {
     #[tokio::test]
     #[ignore]
     async fn live_a_bad_row_rolls_everything_back_and_names_its_line() {
+        const TABLE: &str = "agent_scripts_bad";
         let s = live_session().await;
         let client = s.pinned("import:bad", "shop").await.unwrap();
-        reset(&client).await;
+        reset(&client, TABLE).await;
         let bad = b"id,name,note,qty\n1,A,x,1\n2,\"B\nb\",y,2\n3,C,z,not-a-number\n4,D,w,4\n";
         let path = file("bad.csv", bad);
         let mapping = cols(&[Some("id"), Some("name"), Some("note"), Some("qty")]);
-        let err = run(&client, &path, &mapping, &CsvOptions::default())
+        let err = run(&client, TABLE, &path, &mapping, &CsvOptions::default())
             .await
             .unwrap_err()
             .to_string();
         assert!(err.contains("Line 5:") && err.contains("integer"), "{err}");
-        assert!(rows(&client).await.is_empty());
+        assert!(rows(&client, TABLE).await.is_empty());
 
         // The same through the rewrite path, where the server's line differs.
         let mapping = cols(&[Some("id"), Some("name"), None, Some("qty")]);
-        let err = run(&client, &path, &mapping, &CsvOptions::default())
+        let err = run(&client, TABLE, &path, &mapping, &CsvOptions::default())
             .await
             .unwrap_err()
             .to_string();
         assert!(err.contains("Line 5:") && err.contains("integer"), "{err}");
-        assert!(rows(&client).await.is_empty());
+        assert!(rows(&client, TABLE).await.is_empty());
 
         // A short row.
         std::fs::write(&path, "id,name,note,qty\n1,A,x,1\n2,B\n").unwrap();
-        let err = run(&client, &path, &mapping, &CsvOptions::default())
+        let err = run(&client, TABLE, &path, &mapping, &CsvOptions::default())
             .await
             .unwrap_err()
             .to_string();
@@ -958,7 +971,7 @@ mod live_tests {
 
         // A column that doesn't exist.
         let mapping = cols(&[Some("id"), Some("nope"), Some("note"), Some("qty")]);
-        let err = run(&client, &path, &mapping, &CsvOptions::default())
+        let err = run(&client, TABLE, &path, &mapping, &CsvOptions::default())
             .await
             .unwrap_err()
             .to_string();
@@ -972,7 +985,7 @@ mod live_tests {
 
         client
             .client
-            .batch_execute("DROP TABLE public.agent_scripts_people")
+            .batch_execute(&format!("DROP TABLE public.{TABLE}"))
             .await
             .unwrap();
         std::fs::remove_file(path).unwrap();
@@ -982,9 +995,10 @@ mod live_tests {
     #[tokio::test]
     #[ignore]
     async fn live_imports_a_big_file_and_can_be_cancelled() {
+        const TABLE: &str = "agent_scripts_bulk";
         let s = live_session().await;
         let client = s.pinned("import:big", "shop").await.unwrap();
-        reset(&client).await;
+        reset(&client, TABLE).await;
         let path = std::env::temp_dir().join("agent_scripts_live_big.csv");
         {
             use std::io::Write;
@@ -997,7 +1011,7 @@ mod live_tests {
         let size = std::fs::metadata(&path).unwrap().len();
         let mapping = cols(&[Some("id"), Some("name"), Some("note"), Some("qty")]);
         let started = Instant::now();
-        let done = run(&client, &path, &mapping, &CsvOptions::default())
+        let done = run(&client, TABLE, &path, &mapping, &CsvOptions::default())
             .await
             .unwrap();
         eprintln!(
@@ -1006,10 +1020,10 @@ mod live_tests {
             started.elapsed().as_millis()
         );
         assert_eq!(done.rows, 500_000);
-        reset(&client).await;
+        reset(&client, TABLE).await;
         let skipping = cols(&[Some("id"), None, Some("note"), Some("qty")]);
         let started = Instant::now();
-        let done = run(&client, &path, &skipping, &CsvOptions::default())
+        let done = run(&client, TABLE, &path, &skipping, &CsvOptions::default())
             .await
             .unwrap();
         eprintln!(
@@ -1021,7 +1035,7 @@ mod live_tests {
         let note: String = client
             .client
             .query_one(
-                "SELECT note FROM public.agent_scripts_people WHERE id = 7",
+                &format!("SELECT note FROM public.{TABLE} WHERE id = 7"),
                 &[],
             )
             .await
@@ -1030,7 +1044,7 @@ mod live_tests {
         assert_eq!(note, "line\nbreak 7");
 
         // Cancelled midway: nothing is kept.
-        reset(&client).await;
+        reset(&client, TABLE).await;
         let token = CancelToken::default();
         let canceller = client.canceller();
         let stopper = token.clone();
@@ -1042,7 +1056,7 @@ mod live_tests {
         let err = import_file(
             &client,
             "public",
-            "agent_scripts_people",
+            TABLE,
             &path,
             &mapping,
             &CsvOptions::default(),
@@ -1052,11 +1066,11 @@ mod live_tests {
         )
         .await;
         assert!(matches!(err, Err(AppError::Cancelled)), "{err:?}");
-        assert!(rows(&client).await.is_empty());
+        assert!(rows(&client, TABLE).await.is_empty());
 
         client
             .client
-            .batch_execute("DROP TABLE public.agent_scripts_people")
+            .batch_execute(&format!("DROP TABLE public.{TABLE}"))
             .await
             .unwrap();
         std::fs::remove_file(path).unwrap();
