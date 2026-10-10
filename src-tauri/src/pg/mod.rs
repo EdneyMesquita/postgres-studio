@@ -9,6 +9,7 @@
 pub mod catalog;
 pub mod connect;
 pub mod edit;
+pub mod graph;
 pub mod run;
 pub mod split;
 mod tls;

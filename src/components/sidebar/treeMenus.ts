@@ -164,3 +164,45 @@ export function typeMenuEntries(m: TypeMenu): MenuEntry[] {
     { label: "Copy name", icon: Copy, onSelect: () => copyName(m.name) },
   ];
 }
+
+interface GraphMenu {
+  graph: string;
+  onNewQuery: () => void;
+}
+
+export function graphMenuEntries(m: GraphMenu): MenuEntry[] {
+  return [
+    { heading: m.graph },
+    { label: "New Cypher query", icon: SquareTerminal, onSelect: m.onNewQuery },
+    { label: "Copy name", icon: Copy, onSelect: () => copyName(m.graph) },
+  ];
+}
+
+interface GraphLabelMenu {
+  graph: string;
+  label: string;
+  /** `v` for a vertex label, `e` for an edge label. */
+  kind: "v" | "e";
+  onMatch: () => void;
+}
+
+export function graphLabelMenuEntries(m: GraphLabelMenu): MenuEntry[] {
+  return [
+    { heading: `${m.graph}:${m.label}` },
+    { label: m.kind === "v" ? "Match nodes" : "Match edges", icon: SquareTerminal, onSelect: m.onMatch },
+    { label: "Copy name", icon: Copy, onSelect: () => copyName(m.label) },
+  ];
+}
+
+interface PropertyGraphMenu {
+  qualified: string;
+  onQuery: () => void;
+}
+
+export function propertyGraphMenuEntries(m: PropertyGraphMenu): MenuEntry[] {
+  return [
+    { heading: m.qualified },
+    { label: "Query with GRAPH_TABLE", icon: SquareTerminal, onSelect: m.onQuery },
+    { label: "Copy qualified name", icon: Copy, onSelect: () => copyName(m.qualified) },
+  ];
+}

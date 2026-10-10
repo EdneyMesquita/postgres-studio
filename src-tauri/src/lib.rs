@@ -76,6 +76,8 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
         dump::backup_format,
         dump::dump_database,
         dump::restore_database,
+        commands::graph_catalog,
+        commands::graph_label_properties,
     ])
 }
 

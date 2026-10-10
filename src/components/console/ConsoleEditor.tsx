@@ -5,7 +5,7 @@ import { lineDiff } from "../../lib/assistant/diff";
 import { currentConsoleTarget, useConsoleStore } from "../../store/consoleStore";
 import { useThemeStore } from "../../store/themeStore";
 import { monacoTheme } from "../../lib/themes";
-import { attachSqlCompletion } from "../../lib/sqlCompletion";
+import { attachSqlCompletion, SQL_LANGUAGE } from "../../lib/sqlCompletion";
 import { addEditorCommand } from "../../lib/monaco";
 
 /** What Run takes from the editor: the selection, or the caret's statement. */
@@ -105,7 +105,7 @@ export function ConsoleEditor({ consoleKey: key, script, onRun, onEditor, propos
         // Remounted per console: switching `path` on one editor wrote the
         // incoming script into the outgoing tab's model.
         key={key}
-        language="pgsql"
+        language={SQL_LANGUAGE}
         theme={monacoTheme(themeId)}
         value={proposal ? proposal.text : script}
         onChange={(value) => {

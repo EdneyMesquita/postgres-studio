@@ -22,6 +22,7 @@ use crate::models::{
 };
 use crate::pg::catalog::{self, DatabaseInfo, SchemaInfo, SchemaObjects, TableInfo};
 use crate::pg::connect::{strip_tls_params, uri_param, Canceller};
+use crate::pg::graph::{self, GraphCatalog};
 use crate::pg::run::{self, BrowseInput, BrowseResult, SqlRun};
 use crate::pg::{edit, PgClient, PgSession};
 use crate::saved_scripts::{SavedScript, SavedScriptsStore};
@@ -1130,6 +1131,38 @@ pub async fn open_log_dir<R: Runtime>(app: AppHandle<R>) -> AppResult<String> {
         Ok(dir)
     })();
     logged("open_log_dir", opened)
+}
+
+/// The graphs and graph/vector features of a database, for the explorer.
+#[tauri::command]
+pub async fn graph_catalog(
+    state: State<'_, AppState>,
+    session_id: String,
+    database: String,
+) -> AppResult<GraphCatalog> {
+    let op = Op::new("graphCatalog", &database, None);
+    on_session(&state, &session_id, op, async |s| {
+        let client = s.client(&database).await?;
+        graph::graph_catalog(&client).await
+    })
+    .await
+}
+
+/// The property names the rows of one graph label carry, for completion.
+#[tauri::command]
+pub async fn graph_label_properties(
+    state: State<'_, AppState>,
+    session_id: String,
+    database: String,
+    graph: String,
+    label: String,
+) -> AppResult<Vec<String>> {
+    let op = Op::new("graphLabelProperties", &database, Some(&graph));
+    on_session(&state, &session_id, op, async |s| {
+        let client = s.client(&database).await?;
+        graph::label_properties(&client, &graph, &label).await
+    })
+    .await
 }
 
 #[cfg(test)]

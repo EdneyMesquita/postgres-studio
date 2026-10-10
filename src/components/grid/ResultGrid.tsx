@@ -4,7 +4,7 @@ import { ArrowUpRight, KeyRound, Link2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { RowContextMenu } from "@/components/common/ActionMenu";
 import type { MenuEntry } from "@/components/common/ActionMenu";
-import { alignsRight, cellText, displayValue, kindClass, normalizeBool, valueKind } from "../../lib/pgValue";
+import { alignsRight, cellParts, cellText, displayValue, kindClass, normalizeBool, valueKind } from "../../lib/pgValue";
 import type { ValueKind } from "../../lib/pgValue";
 import type { ColumnInfo, ResultColumn, Row } from "../../types/pg";
 import type { NewRow } from "../../store/sessionsStore";
@@ -427,7 +427,7 @@ const GridRow = memo(function GridRow({
                 <ArrowUpRight className="size-3 text-accent-text opacity-0 group-hover/row:opacity-100" aria-hidden />
               </button>
             ) : (
-              <span className={kindClass(kind)}>{cellText(displayValue(kind, raw))}</span>
+              <CellValue kind={kind} typeName={c.typeName} raw={raw} />
             )}
           </td>
         );
@@ -435,6 +435,17 @@ const GridRow = memo(function GridRow({
     </tr>
   );
 });
+
+/** A value in its type's color, with the muted tag some types add (a vector's `1536d`). */
+function CellValue({ kind, typeName, raw }: { kind: ValueKind; typeName: string; raw: string }) {
+  const { text, tag } = cellParts(kind, typeName, raw);
+  return (
+    <>
+      <span className={kindClass(kind)}>{text}</span>
+      {tag && <span className="ml-1.5 text-fg-3">{tag}</span>}
+    </>
+  );
+}
 
 /** The in-place editor: Enter keeps, Escape cancels, Ctrl+Enter or the null button sets NULL. */
 function CellEditor({ initial, onDone }: { initial: string; onDone: (value: string | null | undefined) => void }) {

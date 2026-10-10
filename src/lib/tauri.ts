@@ -232,3 +232,16 @@ export const api = {
     executionId: string,
   ) => invoke<RestoreSummary>("restore_database", { sessionId, database, sourcePath, options, executionId }),
 };
+
+import type { GraphCatalog } from "../types/pg";
+
+/** Graph and vector features (Apache AGE, pgvector, SQL/PGQ). */
+export const graphApi = {
+  /** Which of the features the database has, and the AGE graphs in it. */
+  graphCatalog: (sessionId: string, database: string) =>
+    invoke<GraphCatalog>("graph_catalog", { sessionId, database }),
+
+  /** The property names a graph label's rows carry (a sample), for completion. */
+  graphLabelProperties: (sessionId: string, database: string, graph: string, label: string) =>
+    invoke<string[]>("graph_label_properties", { sessionId, database, graph, label }),
+};

@@ -7,6 +7,8 @@ import type { TabConnection } from "../../store/sessionsStore";
 import type { DatabaseInfo } from "../../types/pg";
 import { RowContextMenu } from "@/components/common/ActionMenu";
 import { formatBytes } from "@/lib/format";
+import { useGraphStore } from "../../store/graphStore";
+import { GraphRows } from "./GraphRows";
 import { SchemaRow } from "./SchemaRow";
 import { TreeNote } from "./TreeNote";
 import { TreeRow } from "./TreeRow";
@@ -55,6 +57,7 @@ export function DatabaseRow({ db, sessionId, connection, depth, query }: Databas
             onRestore: () => useDumpStore.getState().open("restore", connection, db.name),
             onRefresh: () => {
               void refresh(connection.id, sessionId, db.name);
+              void useGraphStore.getState().refresh(connection.id, sessionId, db.name);
               void useConnectionsStore.getState().refreshDatabases(connection.id);
             },
           })
@@ -93,6 +96,7 @@ export function DatabaseRow({ db, sessionId, connection, depth, query }: Databas
               query={query}
             />
           ))}
+          <GraphRows database={db.name} sessionId={sessionId} connection={connection} depth={depth + 1} active={isOpen} query={query} />
         </div>
       )}
     </>

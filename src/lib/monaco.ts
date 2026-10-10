@@ -3,6 +3,7 @@ import * as monaco from "monaco-editor";
 import EditorWorker from "monaco-editor/editor/editor.worker.js?worker";
 import JsonWorker from "monaco-editor/language/json/json.worker.js?worker";
 import { registerSqlCompletion } from "./sqlCompletion";
+import { registerStudioLanguages } from "./studioLanguages";
 
 // Bundle Monaco (and its web workers) via Vite instead of letting
 // @monaco-editor/react fetch them from a CDN at runtime - this app needs to
@@ -17,6 +18,7 @@ self.MonacoEnvironment = {
 };
 
 loader.config({ monaco });
+registerStudioLanguages(monaco);
 registerSqlCompletion(monaco);
 
 // Editor themes in the app's own colors (DESIGN.md tokens), so the console

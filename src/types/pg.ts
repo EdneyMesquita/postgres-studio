@@ -334,3 +334,34 @@ export interface ToolProgressEvent {
   /** Objects handled so far. */
   objects: number;
 }
+
+export interface GraphLabel {
+  name: string;
+  /** `v` vertex label, `e` edge label. */
+  kind: "v" | "e";
+  /** From the label table's reltuples: null until it was analyzed. */
+  rowEstimate: number | null;
+}
+
+/** An Apache AGE graph and the labels it holds. */
+export interface GraphInfo {
+  name: string;
+  /** The schema holding the graph's label tables. */
+  namespace: string;
+  labels: GraphLabel[];
+}
+
+/** A SQL/PGQ property graph: only listed by servers that have them. */
+export interface PropertyGraphInfo {
+  name: string;
+  schema: string;
+  elements: string[];
+}
+
+/** The graph and vector features of one database. */
+export interface GraphCatalog {
+  age: boolean;
+  vector: boolean;
+  graphs: GraphInfo[];
+  propertyGraphs: PropertyGraphInfo[];
+}

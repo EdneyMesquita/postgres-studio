@@ -7,6 +7,8 @@ import { useSessionsStore } from "../../store/sessionsStore";
 import type { TableTab } from "../../store/sessionsStore";
 import { displayValue, kindClass, normalizeBool, prettyJson, valueKind } from "../../lib/pgValue";
 import { ident } from "../../lib/editSql";
+import { prettyAgtype } from "../../lib/agtype";
+import { VectorValue } from "./VectorValue";
 import type { BrowseResult, IncomingKey, Row } from "../../types/pg";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -95,7 +97,7 @@ export function RowInspector({ tab, editable }: { tab: TableTab; editable: boole
               {editing === c.name ? (
                 <InspectorEditor
                   initial={value === null ? "" : displayValue(kind, value)}
-                  multiline={kind === "json" || (value?.includes("\n") ?? false)}
+                  multiline={kind === "json" || kind === "agtype" || (value?.includes("\n") ?? false)}
                   onDone={(next) => {
                     setEditing(null);
                     if (next === undefined) return;
@@ -116,6 +118,10 @@ export function RowInspector({ tab, editable }: { tab: TableTab; editable: boole
                     <span className="text-fg-3 italic">NULL</span>
                   ) : kind === "json" ? (
                     <span className="text-fg-2">{prettyJson(value)}</span>
+                  ) : kind === "agtype" ? (
+                    <span className="text-fg-2">{prettyAgtype(value)}</span>
+                  ) : kind === "vector" ? (
+                    <VectorValue typeName={c.typeName} value={value} />
                   ) : (
                     <span className={kind === "text" ? "text-json-string" : kindClass(kind)}>{displayValue(kind, value)}</span>
                   )}
