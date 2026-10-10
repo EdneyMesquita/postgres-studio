@@ -236,7 +236,7 @@ mod live_tests {
     //!   POSTGRES_STUDIO_TEST_URI=postgres://postgres:postgres@localhost:5433/shop \
     //!     cargo test --lib -- --ignored pg::objects
     use crate::pg::catalog;
-    use crate::pg::live_tests::session;
+    use crate::pg::test_support::live_session as session;
 
     const CLEANUP: &str = "DROP MATERIALIZED VIEW IF EXISTS agent_objects_mv;
         DROP VIEW IF EXISTS agent_objects_v;

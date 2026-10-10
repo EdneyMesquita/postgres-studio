@@ -140,7 +140,7 @@ mod live_tests {
     //!   POSTGRES_STUDIO_TEST_URI=postgres://postgres:postgres@localhost:5433/shop \
     //!     cargo test --lib -- --ignored activity
     use super::*;
-    use crate::pg::live_tests::session;
+    use crate::pg::test_support::live_session as session;
 
     #[tokio::test]
     #[ignore]

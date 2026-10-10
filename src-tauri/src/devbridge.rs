@@ -32,7 +32,7 @@ const ORIGINS: [&str; 4] = [
     "http://127.0.0.1:1420",
 ];
 /// Every event the backend emits to the window.
-const EVENTS: [&str; 7] = [
+const EVENTS: &[&str] = &[
     crate::assistant::EVENT,
     crate::assistant::STEP_EVENT,
     crate::assistant::APPROVAL_EVENT,
@@ -40,6 +40,8 @@ const EVENTS: [&str; 7] = [
     "export-progress",
     crate::dump::DUMP_EVENT,
     crate::dump::RESTORE_EVENT,
+    crate::script_file::PROGRESS_EVENT,
+    crate::csv_import::PROGRESS_EVENT,
 ];
 
 /// Events waiting for the page's next `GET /events`.
@@ -87,7 +89,7 @@ pub fn run() {
     ));
     println!("devbridge config folder: {}", dir.display());
     let queue = Arc::new(EventQueue::default());
-    for name in EVENTS {
+    for &name in EVENTS {
         let queue = queue.clone();
         app.listen_any(name, move |event| {
             let payload = serde_json::from_str(event.payload()).unwrap_or(Value::Null);

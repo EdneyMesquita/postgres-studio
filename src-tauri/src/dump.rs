@@ -1715,7 +1715,9 @@ mod live_tests {
             return;
         }
         let conn = PgConn::from_target(&session.target);
-        let database = session.target.default_db.clone();
+        // Not the default `shop`: the other live tests create and drop
+        // tables there while they run, which a parallel dump trips over.
+        let database = "analytics".to_string();
         let table = scalar(
             &session,
             &database,

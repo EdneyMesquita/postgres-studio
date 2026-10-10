@@ -3,6 +3,7 @@ import {
   Database,
   DatabaseBackup,
   DatabaseZap,
+  FileUp,
   FolderOpen,
   Moon,
   PanelRight,
@@ -11,6 +12,7 @@ import {
   Sparkles,
   SquareTerminal,
   Sun,
+  Upload,
   Workflow,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -24,6 +26,7 @@ import { useEditorLayoutStore } from "../../store/editorLayoutStore";
 import { selectActiveTab, useSessionsStore } from "../../store/sessionsStore";
 import { LayoutIcon } from "../tabs/LayoutPicker";
 import { useThemeStore } from "../../store/themeStore";
+import { openImportCsv, openRunSqlFile } from "../../store/transferStore";
 import { useUiStore } from "../../store/uiStore";
 import { HighlightMatch } from "./HighlightMatch";
 
@@ -76,6 +79,22 @@ export function PaletteActions({ search, run }: PaletteActionsProps) {
       where: tab.connection.name,
       perform: () => useSessionsStore.getState().openActivity(tab.connection, tab.database),
     });
+    actions.push({
+      id: "run-sql-file",
+      icon: <FileUp />,
+      label: `Run SQL file on ${tab.database}...`,
+      where: tab.connection.name,
+      perform: () => openRunSqlFile(tab.connection, tab.database),
+    });
+    if (tab.kind === "table" && ["r", "p"].includes(tab.relkind)) {
+      actions.push({
+        id: "import-csv",
+        icon: <Upload />,
+        label: `Import CSV into ${tab.schema}.${tab.table}...`,
+        where: tab.connection.name,
+        perform: () => openImportCsv(tab.connection, tab.database, tab.schema, tab.table),
+      });
+    }
     if (tab.kind === "table" || tab.kind === "diagram") {
       actions.push({
         id: "schema-diagram",

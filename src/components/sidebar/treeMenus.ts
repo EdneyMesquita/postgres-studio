@@ -1,4 +1,4 @@
-import { Activity, Copy, DatabaseBackup, DatabaseZap, FileCode, FolderPlus, ListTree, Pencil, Plug, Puzzle, RefreshCw, SquareTerminal, Table, Trash2, Unplug, Users, Workflow, Wrench } from "lucide-react";
+import { Activity, Copy, DatabaseBackup, DatabaseZap, FileCode, FileUp, FolderPlus, ListTree, Pencil, Plug, Puzzle, RefreshCw, SquareTerminal, Table, Trash2, Unplug, Upload, Users, Workflow, Wrench } from "lucide-react";
 import { toast } from "sonner";
 import type { MenuEntry } from "@/components/common/ActionMenu";
 import { GENERATE_LABEL, MAINTENANCE_LABEL, generatableFor, maintenanceFor } from "@/lib/tableActions";
@@ -77,6 +77,7 @@ interface DatabaseMenu {
   onOpenConsole: () => void;
   onActivity: () => void;
   onExtensions: () => void;
+  onRunFile: () => void;
   onRefresh: () => void;
   onBackup: () => void;
   onRestore: () => void;
@@ -88,6 +89,7 @@ export function databaseMenuEntries(m: DatabaseMenu): MenuEntry[] {
     { label: `Open SQL console on ${m.database}`, icon: SquareTerminal, onSelect: m.onOpenConsole },
     { label: "Server activity", icon: Activity, onSelect: m.onActivity },
     { label: "Manage extensions…", icon: Puzzle, onSelect: m.onExtensions },
+    { label: "Run SQL file...", icon: FileUp, onSelect: m.onRunFile },
     { label: "Refresh", icon: RefreshCw, onSelect: m.onRefresh },
     { separator: true },
     { label: "Back up with pg_dump...", icon: DatabaseBackup, onSelect: m.onBackup },
@@ -129,6 +131,9 @@ interface RelationMenu {
   readOnly?: boolean;
   onMaintenance?: (action: MaintenanceAction) => void;
   onGenerate?: (kind: GenerateKind) => void;
+  /** Tables only: load a CSV file into it; disabled on a read-only connection. */
+  onImportCsv?: () => void;
+  importDisabled?: boolean;
 }
 
 export function relationMenuEntries(m: RelationMenu): MenuEntry[] {
@@ -148,6 +153,9 @@ export function relationMenuEntries(m: RelationMenu): MenuEntry[] {
     { label: "Show DDL in a console", icon: FileCode, onSelect: m.onShowDefinition },
     ...(m.onDiagram ? [{ label: "Show in schema diagram", icon: Workflow, onSelect: m.onDiagram }] : []),
     ...tableToolsEntries(m),
+    ...(m.onImportCsv
+      ? [{ label: "Import CSV...", icon: Upload, disabled: m.importDisabled, onSelect: m.onImportCsv }]
+      : []),
     { separator: true },
     { label: "Copy name", icon: Copy, onSelect: () => copyName(m.name) },
     { label: "Copy qualified name", icon: Copy, onSelect: () => copyName(m.qualified) },

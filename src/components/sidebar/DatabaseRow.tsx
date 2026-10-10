@@ -4,6 +4,7 @@ import { databaseKey, schemaKey, useExplorerStore } from "../../store/explorerSt
 import { useDumpStore } from "../../store/dumpStore";
 import { useObjectDialogsStore } from "../../store/objectDialogsStore";
 import { useSessionsStore } from "../../store/sessionsStore";
+import { openRunSqlFile } from "../../store/transferStore";
 import type { TabConnection } from "../../store/sessionsStore";
 import type { DatabaseInfo } from "../../types/pg";
 import { RowContextMenu } from "@/components/common/ActionMenu";
@@ -59,6 +60,7 @@ export function DatabaseRow({ db, sessionId, connection, depth, query }: Databas
             onRestore: () => useDumpStore.getState().open("restore", connection, db.name),
             onActivity: () => useSessionsStore.getState().openActivity(connection, db.name),
             onExtensions: () => useObjectDialogsStore.getState().openExtensions({ connection, sessionId, database: db.name }),
+            onRunFile: () => openRunSqlFile(connection, db.name),
             onRefresh: () => {
               void refresh(connection.id, sessionId, db.name);
               void useGraphStore.getState().refresh(connection.id, sessionId, db.name);

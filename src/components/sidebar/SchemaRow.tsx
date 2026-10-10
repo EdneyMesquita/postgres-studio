@@ -9,6 +9,7 @@ import { groupKey, groupOpen, schemaKey, useExplorerStore } from "../../store/ex
 import type { ObjectGroup } from "../../store/explorerStore";
 import { selectActiveTab, useSessionsStore } from "../../store/sessionsStore";
 import type { TabConnection } from "../../store/sessionsStore";
+import { openImportCsv } from "../../store/transferStore";
 import { useUiStore } from "../../store/uiStore";
 import type { FunctionEntry, RelationEntry, SchemaInfo, TypeEntry } from "../../types/pg";
 import { RowContextMenu } from "@/components/common/ActionMenu";
@@ -262,6 +263,10 @@ function ObjectGroupRows({ group, items, open, depth, onToggle, schema, database
                     onMaintenance: (action) =>
                       void runMaintenance({ connection, sessionId, database, schema, table: rel.name }, action),
                     onGenerate: (kind) => void generateSql({ connection, sessionId, database, schema, table: rel.name }, kind),
+                    onImportCsv: ["r", "p"].includes(rel.kind)
+                      ? () => openImportCsv(connection, database, schema, rel.name)
+                      : undefined,
+                    importDisabled: useConnectionsStore.getState().sessions[connection.id]?.readOnly ?? false,
                     onShowDefinition: () =>
                       void showDefinition(connection, sessionId, database, schema, rel.name, isSequence ? "sequence" : "table"),
                   })

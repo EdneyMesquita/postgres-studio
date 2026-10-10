@@ -158,10 +158,8 @@ mod tests {
 }
 
 #[cfg(test)]
-pub(crate) mod live_tests {
-    //! Against the dev server (docker-compose.dev.yml). Run with:
-    //!   POSTGRES_STUDIO_TEST_URI=postgres://postgres:postgres@localhost:5433/shop \
-    //!     cargo test --lib -- --ignored pg::live_tests
+pub(crate) mod test_support {
+    //! A session on the dev server, for the `--ignored` live tests.
     use super::*;
     use crate::models::{
         ConnectionAdvancedOptions, ConnectionProfile, ConnectionSource, SslMode, TlsOptions,
@@ -169,7 +167,9 @@ pub(crate) mod live_tests {
     use crate::secrets::InMemoryStore;
     use std::sync::Arc;
 
-    pub(crate) async fn session() -> PgSession {
+    /// Needs `POSTGRES_STUDIO_TEST_URI`, e.g.
+    /// `postgres://postgres:postgres@localhost:5433/shop`.
+    pub(crate) async fn live_session() -> PgSession {
         let uri = std::env::var("POSTGRES_STUDIO_TEST_URI").expect("set POSTGRES_STUDIO_TEST_URI");
         let profile = ConnectionProfile {
             id: "live".into(),
@@ -192,6 +192,17 @@ pub(crate) mod live_tests {
         PgSession::connect(&profile, &InMemoryStore::new(), &known)
             .await
             .unwrap()
+    }
+}
+
+#[cfg(test)]
+mod live_tests {
+    //! Against the dev server (docker-compose.dev.yml). Run with:
+    //!   POSTGRES_STUDIO_TEST_URI=postgres://postgres:postgres@localhost:5433/shop \
+    //!     cargo test --lib -- --ignored pg::live_tests
+    use super::*;
+    async fn session() -> PgSession {
+        test_support::live_session().await
     }
 
     fn opts() -> run::RunOptions {

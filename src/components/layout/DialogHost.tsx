@@ -3,6 +3,7 @@ import { useDumpStore } from "../../store/dumpStore";
 import { useUiStore } from "../../store/uiStore";
 import { ConfirmDialog } from "../common/ConfirmDialog";
 import { ObjectDialogs } from "../objects/ObjectDialogs";
+import { TransferDialogs } from "../scripts/TransferDialogs";
 
 // Loaded on first use, keeping them out of the startup bundle.
 const ConnectionForm = lazy(() =>
@@ -48,6 +49,7 @@ export function DialogHost() {
     <>
       <Suspense fallback={null}>{content}</Suspense>
       <ObjectDialogs />
+      <TransferDialogs />
       <ConfirmDialog />
     </>
   );

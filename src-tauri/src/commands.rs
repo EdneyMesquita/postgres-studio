@@ -543,7 +543,7 @@ pub fn secret_backend_info(state: State<AppState>) -> SecretBackendInfo {
 }
 
 /// The live session behind `session_id`.
-async fn session(state: &AppState, session_id: &str) -> AppResult<Arc<PgSession>> {
+pub(crate) async fn session(state: &AppState, session_id: &str) -> AppResult<Arc<PgSession>> {
     state
         .sessions
         .read()
@@ -572,7 +572,11 @@ pub(crate) async fn on_session<T>(
 }
 
 /// Registers what stops `execution_id`; `forget_task` removes it.
-fn track_task(state: &AppState, execution_id: &str, canceller: Option<Canceller>) -> CancelToken {
+pub(crate) fn track_task(
+    state: &AppState,
+    execution_id: &str,
+    canceller: Option<Canceller>,
+) -> CancelToken {
     let token = CancelToken::default();
     state.running_tasks.lock().unwrap().insert(
         execution_id.to_string(),
@@ -584,7 +588,7 @@ fn track_task(state: &AppState, execution_id: &str, canceller: Option<Canceller>
     token
 }
 
-fn forget_task(state: &AppState, execution_id: &str) {
+pub(crate) fn forget_task(state: &AppState, execution_id: &str) {
     state.running_tasks.lock().unwrap().remove(execution_id);
 }
 
