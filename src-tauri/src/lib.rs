@@ -9,6 +9,7 @@ mod models;
 mod paths;
 mod pg;
 mod saved_scripts;
+mod script_file;
 mod secrets;
 mod sidebar_layout;
 mod ssh_tunnel;
@@ -70,6 +71,7 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
         commands::assistant_answer,
         commands::assistant_workdir,
         commands::open_log_dir,
+        script_file::run_sql_file,
     ])
 }
 
