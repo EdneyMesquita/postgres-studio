@@ -1,0 +1,234 @@
+name: Microsoft Store
+
+# Builds the MSIX package for the Microsoft Store and, once the Store
+# credentials are set up, submits every new release to it (see
+# docs/microsoft-store.md). The package is unsigned on purpose: the Store
+# signs it after certification, so no certificate is needed.
+#
+# The package identity comes from repository variables, copied from Partner
+# Center > the app > Product management > Product identity:
+#   MSSTORE_IDENTITY_NAME            Package/Identity/Name
+#   MSSTORE_PUBLISHER                Package/Identity/Publisher (CN=...)
+#   MSSTORE_PUBLISHER_DISPLAY_NAME   Package/Properties/PublisherDisplayName
+#   MSSTORE_DISPLAY_NAME             optional, the reserved app name
+# Without them (pull requests, forks) it packs with a placeholder identity,
+# which checks that packaging works but can't be uploaded.
+#
+# Submitting also takes:
+#   MSSTORE_PRODUCT_ID               variable, the Store ID (9N...)
+#   MSSTORE_TENANT_ID, MSSTORE_SELLER_ID, MSSTORE_CLIENT_ID,
+#   MSSTORE_CLIENT_SECRET            secrets, the Microsoft Entra app that
+#                                    Partner Center lets manage submissions
+#
+# Each submitted release is marked with an `msstore/vX.Y.Z` tag in this
+# repository, so the schedule submits a release only once.
+on:
+  release:
+    types: [released]
+  # Catches a release whose submission failed or was skipped.
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build (defaults to the latest release)
+        required: false
+      submit:
+        description: Submit it to the Microsoft Store
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - "src-tauri/msix/**"
+      - ".github/workflows/microsoft-store.yml"
+
+permissions:
+  contents: read
+
+# One submission at a time, so a scheduled run sees the tag left by the
+# previous one.
+concurrency:
+  group: microsoft-store-${{ github.event_name == 'pull_request' && github.ref || 'submit' }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    # Repositories without the Store set up don't spend a runner on the
+    # schedule.
+    if: github.event_name != 'schedule' || vars.MSSTORE_PRODUCT_ID != ''
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      submit: ${{ steps.plan.outputs.submit }}
+      mark: ${{ steps.plan.outputs.mark }}
+      repo: ${{ steps.plan.outputs.repo }}
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - name: Decide what to build
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          SOURCE_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_SUBMIT: ${{ inputs.submit }}
+          CONFIGURED: ${{ vars.MSSTORE_PRODUCT_ID != '' && vars.MSSTORE_IDENTITY_NAME != '' && secrets.MSSTORE_CLIENT_SECRET != '' }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = pull_request ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "submit=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          repo="$SOURCE_REPO"
+          wanted=true
+          case "$EVENT" in
+            release) repo="$GITHUB_REPOSITORY"; tag="$RELEASE_TAG" ;;
+            workflow_dispatch) tag="$INPUT_TAG"; wanted="$INPUT_SUBMIT" ;;
+            *) tag="" ;;
+          esac
+          if [ -z "$tag" ]; then
+            tag=$(gh release view --repo "$repo" --json tagName --jq .tagName)
+          fi
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Not a release tag: $tag"
+            exit 1
+          fi
+
+          marked=false
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/msstore/$tag" --silent 2>/dev/null; then
+            marked=true
+          fi
+
+          submit=false
+          if [ "$wanted" = true ] && [ "$CONFIGURED" = true ]; then
+            # A manual run submits even a release that was already sent.
+            if [ "$marked" = false ] || [ "$EVENT" = workflow_dispatch ]; then
+              submit=true
+            fi
+          fi
+          if [ "$wanted" = true ] && [ "$CONFIGURED" != true ]; then
+            echo "::notice::The Store isn't set up here: building $tag without submitting it."
+          fi
+          if [ "$EVENT" = schedule ] && [ "$submit" = false ]; then
+            echo "Nothing new: $repo $tag was already submitted."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+          {
+            echo "submit=$submit"
+            echo "mark=$([ "$marked" = false ] && echo true || echo false)"
+            echo "repo=$repo"
+            echo "tag=$tag"
+          } >> "$GITHUB_OUTPUT"
+          echo "$repo $tag: submit=$submit, already submitted=$marked"
+
+  msix:
+    needs: resolve
+    if: needs.resolve.outputs.build == 'true'
+    runs-on: windows-latest
+    permissions:
+      contents: write # the msstore/vX.Y.Z tag
+    env:
+      IDENTITY_NAME: ${{ vars.MSSTORE_IDENTITY_NAME || 'PostgresStudio.Placeholder' }}
+      PUBLISHER: ${{ vars.MSSTORE_PUBLISHER || 'CN=Placeholder' }}
+      PUBLISHER_DISPLAY_NAME: ${{ vars.MSSTORE_PUBLISHER_DISPLAY_NAME || 'Placeholder' }}
+      DISPLAY_NAME: ${{ vars.MSSTORE_DISPLAY_NAME || 'Postgres Studio' }}
+      PLACEHOLDER: ${{ vars.MSSTORE_IDENTITY_NAME == '' }}
+    steps:
+      # The release's source. Empty repo and tag (pull requests) mean the
+      # event's own commit.
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.resolve.outputs.repo }}
+          ref: ${{ needs.resolve.outputs.tag }}
+
+      # The packaging files come from this workflow's commit, so a release
+      # tagged before they changed still packs with the current ones.
+      - uses: actions/checkout@v4
+        with:
+          path: .msstore
+          sparse-checkout: src-tauri/msix
+      - name: Use this workflow's packaging files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force src-tauri/msix | Out-Null
+          Copy-Item .msstore/src-tauri/msix/* src-tauri/msix/ -Force
+          Remove-Item .msstore -Recurse -Force
+
+      # aws-lc-sys (pulled in transitively for TLS) needs NASM to build its
+      # assembly routines on Windows.
+      - name: Install NASM
+        uses: ilammy/setup-nasm@v1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # Just the executable: the MSIX replaces the MSI/NSIS installers here.
+      - name: Build the app
+        run: npm run tauri -- build --no-bundle
+
+      - name: Pack the MSIX
+        id: pack
+        shell: pwsh
+        run: |
+          ./src-tauri/msix/pack-msix.ps1 `
+            -IdentityName $env:IDENTITY_NAME `
+            -Publisher $env:PUBLISHER `
+            -PublisherDisplayName $env:PUBLISHER_DISPLAY_NAME `
+            -DisplayName $env:DISPLAY_NAME
+
+      - name: Upload the package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PLACEHOLDER == 'true' && 'msix-placeholder-identity-not-for-upload' || 'msix-microsoft-store' }}
+          path: ${{ steps.pack.outputs.package }}
+          if-no-files-found: error
+
+      - name: Set up the Microsoft Store CLI
+        if: needs.resolve.outputs.submit == 'true'
+        uses: microsoft/microsoft-store-apppublisher@v1.1
+
+      # Replaces the package in a new submission copied from the last one
+      # (listing, pricing and the rest stay as they are) and sends it to
+      # certification.
+      - name: Submit to the Microsoft Store
+        if: needs.resolve.outputs.submit == 'true'
+        shell: pwsh
+        env:
+          PACKAGE: ${{ steps.pack.outputs.package }}
+          PRODUCT_ID: ${{ vars.MSSTORE_PRODUCT_ID }}
+          TENANT_ID: ${{ secrets.MSSTORE_TENANT_ID }}
+          SELLER_ID: ${{ secrets.MSSTORE_SELLER_ID }}
+          CLIENT_ID: ${{ secrets.MSSTORE_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.MSSTORE_CLIENT_SECRET }}
+        run: |
+          msstore reconfigure --tenantId $env:TENANT_ID --sellerId $env:SELLER_ID `
+            --clientId $env:CLIENT_ID --clientSecret $env:CLIENT_SECRET
+          if ($LASTEXITCODE -ne 0) { throw "msstore reconfigure failed" }
+          msstore publish $env:PACKAGE -id $env:PRODUCT_ID
+          if ($LASTEXITCODE -ne 0) { throw "msstore publish failed" }
+
+      - name: Mark the release as submitted
+        if: needs.resolve.outputs.submit == 'true' && needs.resolve.outputs.mark == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: gh api "repos/$env:GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/msstore/$env:TAG" -f "sha=$env:GITHUB_SHA" --silent

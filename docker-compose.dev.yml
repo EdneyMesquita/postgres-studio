@@ -1,0 +1,17 @@
+# Local PostgreSQL for development and the #[ignore]d integration tests, on
+# port 5433 so it can run beside another project's Postgres on 5432.
+# The seed runs on the first start only; `docker compose -f docker-compose.dev.yml down -v`
+# throws the data away so the next start seeds again.
+services:
+  postgres:
+    image: postgres:17.11-alpine
+    container_name: postgres-studio-dev
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: shop
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - ./scripts/seed-dev.sql:/docker-entrypoint-initdb.d/10-shop.sql:ro
+      - ./scripts/seed-dev-analytics.sql:/docker-entrypoint-initdb.d/20-analytics.sql:ro

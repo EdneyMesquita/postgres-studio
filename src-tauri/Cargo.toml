@@ -1,0 +1,74 @@
+[package]
+name = "postgres-studio"
+version = "0.1.0"
+description = "An open-source PostgreSQL client"
+authors = ["Edney Mesquita"]
+edition = "2021"
+default-run = "postgres-studio"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "postgres_studio_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[features]
+# A debug-only HTTP bridge to the real commands, for driving the UI from a
+# browser during development: `cargo run --features devbridge --bin devbridge`.
+devbridge = ["tauri/test"]
+
+[[bin]]
+name = "postgres-studio"
+path = "src/main.rs"
+
+[[bin]]
+name = "devbridge"
+path = "src/bin/devbridge.rs"
+required-features = ["devbridge"]
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+keyring = { version = "4.2.0", default-features = false, features = ["apple-native-keyring-store", "v1", "windows-native-keyring-store", "zbus-secret-service-keyring-store"] }
+russh = "0.63.3"
+uuid = { version = "1.26.1", features = ["v4", "serde"] }
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "process"] }
+aes-gcm = "0.11.1"
+rand = "0.10.2"
+base64 = "0.23.1"
+urlencoding = "2.1.3"
+futures-util = { version = "0.3.34", features = ["io"] }
+csv = "1.4.0"
+tokio-postgres = "0.7.18"
+tokio-postgres-rustls = "0.14.0"
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12", "logging"] }
+rustls-native-certs = "0.8"
+tauri-plugin-dialog = "2.7.3"
+tauri-plugin-log = "2"
+log = "0.4"
+time = { version = "0.3", features = ["local-offset"] }
+
+# Only needed to force-enable apple-native-keyring-store's own "keychain"
+# feature (keyring's own feature flag doesn't do that for us). Gated to
+# macOS since this crate's CoreFoundation-based code doesn't build on
+# Windows/Linux, and keyring's own cross-platform dependency already
+# handles those targets on its own.
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

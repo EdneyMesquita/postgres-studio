@@ -1,0 +1,183 @@
+import type * as Monaco from "monaco-editor";
+import { api } from "./tauri";
+import { useExplorerStore } from "../store/explorerStore";
+import type { ColumnInfo, SchemaObjects } from "../types/pg";
+
+/** Where an editor's SQL runs: what its completion lists come from. */
+export interface SqlContext {
+  sessionId: string;
+  connectionId: string;
+  database: string;
+}
+
+const contexts = new Map<string, () => SqlContext | null>();
+const columnCache = new Map<string, Promise<ColumnInfo[]>>();
+
+const KEYWORDS = (
+  "SELECT FROM WHERE AND OR NOT NULL IS IN LIKE ILIKE BETWEEN EXISTS JOIN LEFT RIGHT INNER FULL OUTER CROSS LATERAL ON USING " +
+  "GROUP BY ORDER ASC DESC NULLS FIRST LAST HAVING LIMIT OFFSET DISTINCT AS WITH RECURSIVE UNION ALL EXCEPT INTERSECT CASE WHEN THEN ELSE END " +
+  "INSERT INTO VALUES DEFAULT RETURNING UPDATE SET DELETE TRUNCATE BEGIN COMMIT ROLLBACK SAVEPOINT CREATE TABLE VIEW MATERIALIZED INDEX UNIQUE " +
+  "PRIMARY KEY FOREIGN REFERENCES CHECK CONSTRAINT ALTER ADD COLUMN DROP RENAME TO CASCADE RESTRICT IF FUNCTION PROCEDURE RETURNS LANGUAGE " +
+  "TRIGGER SCHEMA SEQUENCE TYPE ENUM EXPLAIN ANALYZE VERBOSE BUFFERS VACUUM GRANT REVOKE COMMENT FILTER OVER PARTITION WINDOW COALESCE NULLIF " +
+  "CAST INTERVAL TRUE FALSE ON CONFLICT DO NOTHING"
+).split(" ");
+
+const FUNCTIONS = (
+  "count sum avg min max now current_date current_timestamp date_trunc extract to_char to_date coalesce nullif greatest least " +
+  "length lower upper trim substring replace concat string_agg array_agg json_agg jsonb_agg json_build_object jsonb_build_object " +
+  "jsonb_set jsonb_extract_path_text row_number rank dense_rank lag lead generate_series round floor ceil abs random gen_random_uuid " +
+  "pg_size_pretty pg_total_relation_size age split_part regexp_replace unnest"
+).split(" ");
+
+/** Lets completion know which database an editor's text runs on. */
+export function attachSqlCompletion(model: Monaco.editor.ITextModel, context: () => SqlContext | null): () => void {
+  const uri = model.uri.toString();
+  contexts.set(uri, context);
+  return () => contexts.delete(uri);
+}
+
+function objectsOf(ctx: SqlContext): { schema: string; objects: SchemaObjects }[] {
+  const { schemas } = useExplorerStore.getState();
+  const prefix = `${ctx.connectionId}/${ctx.database}/`;
+  return Object.entries(schemas)
+    .filter(([key, node]) => key.startsWith(prefix) && node.objects)
+    .map(([key, node]) => ({ schema: key.slice(prefix.length), objects: node.objects! }));
+}
+
+function columnsOf(ctx: SqlContext, schema: string, table: string): Promise<ColumnInfo[]> {
+  const key = `${ctx.sessionId}/${ctx.database}/${schema}.${table}`;
+  let found = columnCache.get(key);
+  if (!found) {
+    found = api
+      .describeTable(ctx.sessionId, ctx.database, schema, table)
+      .then((info) => info.columns)
+      .catch(() => {
+        columnCache.delete(key);
+        return [];
+      });
+    columnCache.set(key, found);
+  }
+  return found;
+}
+
+const unquote = (name: string) => (name.startsWith('"') ? name.slice(1, -1).replace(/""/g, '"') : name.toLowerCase());
+
+/** Tables named after FROM / JOIN / UPDATE / INTO, with their aliases. */
+function referencedTables(text: string): { schema: string | null; table: string; alias: string | null }[] {
+  const re = /\b(?:from|join|update|into)\s+((?:"[^"]+"|[a-zA-Z_][\w$]*)(?:\s*\.\s*(?:"[^"]+"|[a-zA-Z_][\w$]*))?)(?:\s+(?:as\s+)?("[^"]+"|[a-zA-Z_][\w$]*))?/gi;
+  const reserved = new Set(["where", "join", "on", "left", "right", "inner", "outer", "full", "cross", "group", "order", "limit", "set", "values", "using", "natural", "lateral", "select", "returning", "as"]);
+  const out: { schema: string | null; table: string; alias: string | null }[] = [];
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    const parts = m[1].split(/\s*\.\s*/);
+    const table = unquote(parts[parts.length - 1]);
+    const schema = parts.length > 1 ? unquote(parts[0]) : null;
+    const alias = m[2] && !reserved.has(m[2].toLowerCase()) ? unquote(m[2]) : null;
+    out.push({ schema, table, alias });
+  }
+  return out;
+}
+
+function findSchema(ctx: SqlContext, table: string, schema: string | null): string | null {
+  if (schema) return schema;
+  const all = objectsOf(ctx);
+  const has = (o: SchemaObjects) => [...o.tables, ...o.views, ...o.materializedViews].some((t) => t.name === table);
+  return (all.find((s) => s.schema === "public" && has(s.objects)) ?? all.find((s) => has(s.objects)))?.schema ?? null;
+}
+
+export function registerSqlCompletion(monaco: typeof Monaco) {
+  const { CompletionItemKind: Kind } = monaco.languages;
+  for (const language of ["pgsql", "sql"]) {
+    monaco.languages.registerCompletionItemProvider(language, {
+      triggerCharacters: ["."],
+      async provideCompletionItems(model, position) {
+        const ctx = contexts.get(model.uri.toString())?.() ?? null;
+        const word = model.getWordUntilPosition(position);
+        const range = {
+          startLineNumber: position.lineNumber,
+          endLineNumber: position.lineNumber,
+          startColumn: word.startColumn,
+          endColumn: word.endColumn,
+        };
+        const text = model.getValue();
+        const before = model.getValueInRange({
+          startLineNumber: position.lineNumber,
+          startColumn: 1,
+          endLineNumber: position.lineNumber,
+          endColumn: word.startColumn,
+        });
+        const suggestions: Monaco.languages.CompletionItem[] = [];
+        const dotted = before.match(/("[^"]+"|[a-zA-Z_][\w$]*)\s*\.\s*$/);
+
+        if (dotted && ctx) {
+          const qualifier = unquote(dotted[1]);
+          // schema.  -> its relations
+          const schema = objectsOf(ctx).find((s) => s.schema === qualifier);
+          if (schema) {
+            for (const t of [...schema.objects.tables, ...schema.objects.views, ...schema.objects.materializedViews]) {
+              suggestions.push({ label: t.name, kind: t.kind === "r" || t.kind === "p" ? Kind.Struct : Kind.Interface, insertText: quoteIfNeeded(t.name), range, detail: t.kind === "v" ? "view" : "table" });
+            }
+            for (const f of schema.objects.functions) {
+              suggestions.push({ label: `${f.name}(${f.args})`, kind: Kind.Function, insertText: `${quoteIfNeeded(f.name)}(`, range, detail: f.returns ?? undefined });
+            }
+            return { suggestions };
+          }
+          // alias. or table.  -> its columns
+          const refs = referencedTables(text);
+          const ref = refs.find((r) => r.alias === qualifier) ?? refs.find((r) => r.table === qualifier) ?? { schema: null, table: qualifier, alias: null };
+          const owner = findSchema(ctx, ref.table, ref.schema);
+          if (owner) {
+            for (const c of await columnsOf(ctx, owner, ref.table)) {
+              suggestions.push({ label: c.name, kind: Kind.Field, insertText: quoteIfNeeded(c.name), range, detail: c.typeName, documentation: c.comment ?? undefined });
+            }
+          }
+          return { suggestions };
+        }
+
+        if (ctx) {
+          // columns of the tables the statement names, first
+          const seen = new Set<string>();
+          for (const ref of referencedTables(text)) {
+            const owner = findSchema(ctx, ref.table, ref.schema);
+            if (!owner) continue;
+            for (const c of await columnsOf(ctx, owner, ref.table)) {
+              if (seen.has(c.name)) continue;
+              seen.add(c.name);
+              suggestions.push({ label: c.name, kind: Kind.Field, insertText: quoteIfNeeded(c.name), range, detail: `${ref.table} · ${c.typeName}`, sortText: `0${c.name}` });
+            }
+          }
+          for (const { schema, objects } of objectsOf(ctx)) {
+            const prefix = schema === "public" ? "" : `${quoteIfNeeded(schema)}.`;
+            for (const t of [...objects.tables, ...objects.views, ...objects.materializedViews]) {
+              suggestions.push({
+                label: prefix + t.name,
+                kind: t.kind === "v" ? Kind.Interface : Kind.Struct,
+                insertText: prefix + quoteIfNeeded(t.name),
+                range,
+                detail: `${schema} · ${t.kind === "v" ? "view" : t.kind === "m" ? "materialized view" : "table"}`,
+                sortText: `1${t.name}`,
+              });
+            }
+            for (const f of objects.functions) {
+              suggestions.push({ label: prefix + f.name, kind: Kind.Function, insertText: `${prefix}${quoteIfNeeded(f.name)}(`, range, detail: `(${f.args})${f.returns ? ` → ${f.returns}` : ""}`, sortText: `3${f.name}` });
+            }
+          }
+          for (const { schema } of objectsOf(ctx)) {
+            suggestions.push({ label: schema, kind: Kind.Module, insertText: quoteIfNeeded(schema), range, detail: "schema", sortText: `4${schema}` });
+          }
+        }
+        for (const k of KEYWORDS) suggestions.push({ label: k, kind: Kind.Keyword, insertText: k, range, sortText: `5${k}` });
+        for (const f of FUNCTIONS) suggestions.push({ label: f, kind: Kind.Function, insertText: `${f}(`, range, sortText: `6${f}` });
+        return { suggestions };
+      },
+    });
+  }
+}
+
+function quoteIfNeeded(name: string): string {
+  return /^[a-z_][a-z0-9_$]*$/.test(name) ? name : `"${name.replace(/"/g, '""')}"`;
+}
+
+/** Forgets cached columns, e.g. after DDL. */
+export function clearColumnCache() {
+  columnCache.clear();
+}
