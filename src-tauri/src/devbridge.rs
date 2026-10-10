@@ -32,13 +32,14 @@ const ORIGINS: [&str; 4] = [
     "http://127.0.0.1:1420",
 ];
 /// Every event the backend emits to the window.
-const EVENTS: [&str; 6] = [
+const EVENTS: [&str; 7] = [
     crate::assistant::EVENT,
     crate::assistant::STEP_EVENT,
     crate::assistant::APPROVAL_EVENT,
     crate::assistant::APPROVAL_CLOSED_EVENT,
     "export-progress",
     crate::script_file::PROGRESS_EVENT,
+    crate::csv_import::PROGRESS_EVENT,
 ];
 
 /// Events waiting for the page's next `GET /events`.

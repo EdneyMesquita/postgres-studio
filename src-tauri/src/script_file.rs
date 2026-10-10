@@ -10,6 +10,7 @@
 use std::io::{Cursor, Read};
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::{pin_mut, SinkExt, TryStreamExt};
@@ -21,7 +22,7 @@ use crate::commands::{forget_task, session, track_task};
 use crate::error::{AppError, AppResult};
 use crate::logging::{self, logged, Op};
 use crate::pg::split::{Event, Splitter, SplitterOptions, Statement};
-use crate::pg::{DbError, PgClient};
+use crate::pg::{DbError, PgClient, PgSession};
 use crate::state::{AppState, CancelToken};
 
 pub const PROGRESS_EVENT: &str = "script-progress";
@@ -103,6 +104,21 @@ pub struct ScriptSummary {
     pub rolled_back: bool,
 }
 
+/// What a run tells whoever started it.
+pub enum Signal<'a> {
+    Progress(ScriptProgress),
+    /// The run moved to a new connection; cancelling must reach that one.
+    Reconnected(&'a PgClient),
+}
+
+/// Where a script runs: its own connection of `session`, kept under `key`.
+#[derive(Clone, Copy)]
+pub struct Target<'a> {
+    pub session: &'a PgSession,
+    pub key: &'a str,
+    pub database: &'a str,
+}
+
 /// How a statement ended when it didn't succeed.
 enum Failure {
     Cancelled,
@@ -112,7 +128,11 @@ enum Failure {
 type Sink = Pin<Box<CopyInSink<Cursor<Vec<u8>>>>>;
 
 struct Run<'a, F> {
-    client: &'a PgClient,
+    target: &'a Target<'a>,
+    client: Arc<PgClient>,
+    /// Session settings the script made (`SET ...`), to repeat on a new
+    /// connection.
+    setup: Vec<String>,
     token: &'a CancelToken,
     execution_id: &'a str,
     on_progress: F,
@@ -140,20 +160,20 @@ enum Flow {
     Stop,
 }
 
-impl<F: FnMut(ScriptProgress)> Run<'_, F> {
+impl<F: FnMut(Signal)> Run<'_, F> {
     fn progress(&mut self, preview: &str) {
         if self.last_progress.elapsed() < PROGRESS_EVERY {
             return;
         }
         self.last_progress = Instant::now();
-        (self.on_progress)(ScriptProgress {
+        (self.on_progress)(Signal::Progress(ScriptProgress {
             execution_id: self.execution_id.to_string(),
             statements_done: self.statements.saturating_sub(1),
             bytes_read: self.bytes_read,
             total_bytes: self.total_bytes,
             errors: self.error_count,
             current_preview: preview.to_string(),
-        });
+        }));
     }
 
     fn warn(&mut self, line: u64, message: String) {
@@ -225,9 +245,13 @@ impl<F: FnMut(ScriptProgress)> Run<'_, F> {
         self.statements += 1;
         self.bytes_read = self.bytes_read.max(stmt.end as u64);
         self.progress(&preview(&stmt.text));
-        let outcome = self.guarded(drain(self.client, &stmt.text)).await;
+        let outcome = self.guarded(drain(&self.client, &stmt.text)).await;
         // Nobody reads the notices of a script, and the channel is unbounded.
         self.client.take_notices();
+        if outcome.is_ok() && keeps_setting(&stmt.text) && self.setup.len() < KEPT {
+            self.setup.push(stmt.text);
+            return Flow::Go;
+        }
         self.finish(outcome, self.statements, stmt.line)
     }
 
@@ -255,8 +279,40 @@ impl<F: FnMut(ScriptProgress)> Run<'_, F> {
                 Flow::Go
             }
             // The data lines that follow are skipped.
-            outcome => self.finish(outcome.map(|_| ()), index, stmt.line),
+            outcome => {
+                let flow = self.finish(outcome.map(|_| ()), index, stmt.line);
+                if flow == Flow::Go {
+                    // The driver can't use a connection again after a COPY the
+                    // server refused to start (a missing table, say).
+                    if let Err(e) = self.reconnect().await {
+                        self.fail(index, stmt.line, &e);
+                        self.stopped = true;
+                        return Flow::Stop;
+                    }
+                }
+                flow
+            }
         }
+    }
+
+    /// Moves the run to a fresh connection with the script's `SET`s repeated.
+    async fn reconnect(&mut self) -> Result<(), Box<DbError>> {
+        let Target {
+            session,
+            key,
+            database,
+        } = *self.target;
+        session.release(key).await;
+        let client = session
+            .pinned(key, database)
+            .await
+            .map_err(|e| Box::new(plain_error(&format!("Couldn't reopen the connection: {e}"))))?;
+        (self.on_progress)(Signal::Reconnected(&client));
+        for setting in &self.setup {
+            let _ = drain(&client, setting).await;
+        }
+        self.client = client;
+        Ok(())
     }
 
     async fn copy_data(&mut self, data: Vec<u8>) -> Flow {
@@ -306,6 +362,19 @@ fn plain_error(message: &str) -> DbError {
     }
 }
 
+/// Whether a statement changes the session in a way a new connection
+/// should repeat: `SET`, `RESET`, `set_config(..)`.
+fn keeps_setting(text: &str) -> bool {
+    let lower = text.trim_start().to_ascii_lowercase();
+    let mut words = lower.split_whitespace();
+    match words.next() {
+        Some("set") => words.next() != Some("local") && text.len() <= 4096,
+        Some("reset") => true,
+        Some("select") => lower.contains("set_config(") && text.len() <= 4096,
+        _ => false,
+    }
+}
+
 /// Runs `sql` and drops what it returns: a script is run for its effects.
 async fn drain(client: &PgClient, sql: &str) -> Result<(), tokio_postgres::Error> {
     let stream = client.client.simple_query_raw(sql).await?;
@@ -345,20 +414,23 @@ fn preview(text: &str) -> String {
     out
 }
 
-/// Runs the file at `path` on `client`. A cancel or an error that stops the
-/// run is part of the summary, not a failure of the call.
+/// Runs the file at `path` on the target's connection. A cancel or an error
+/// that stops the run is part of the summary, not a failure of the call.
 pub async fn run_file(
-    client: &PgClient,
+    target: &Target<'_>,
     path: &Path,
     options: &ScriptOptions,
     token: &CancelToken,
     execution_id: &str,
-    on_progress: impl FnMut(ScriptProgress),
+    on_progress: impl FnMut(Signal),
 ) -> AppResult<ScriptSummary> {
     let mut file = std::fs::File::open(path)?;
     let total_bytes = file.metadata()?.len();
+    let client = target.session.pinned(target.key, target.database).await?;
     let mut run = Run {
+        target,
         client,
+        setup: Vec::new(),
         token,
         execution_id,
         on_progress,
@@ -378,7 +450,7 @@ pub async fn run_file(
         copy: None,
     };
     if options.single_transaction {
-        drain(client, "BEGIN").await?;
+        drain(&run.client, "BEGIN").await?;
     }
 
     let mut splitter = Splitter::new(SplitterOptions {
@@ -396,7 +468,7 @@ pub async fn run_file(
         let n = match file.read(&mut buf) {
             Ok(n) => n,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(e) => return abort(client, options, e.into()).await,
+            Err(e) => return abort(&run.client, options, e.into()).await,
         };
         if n == 0 {
             splitter.finish(&mut events);
@@ -424,7 +496,7 @@ pub async fn run_file(
         let ended = if clean { "COMMIT" } else { "ROLLBACK" };
         // After a cancel the connection may still be busy; give up on it
         // rather than wait: closing it rolls the transaction back anyway.
-        let ended = tokio::time::timeout(Duration::from_secs(10), drain(client, ended)).await;
+        let ended = tokio::time::timeout(Duration::from_secs(10), drain(&run.client, ended)).await;
         match (clean, ended) {
             (true, Ok(Ok(()))) => {}
             (true, Ok(Err(e))) => {
@@ -459,6 +531,26 @@ async fn abort<T>(client: &PgClient, options: &ScriptOptions, error: AppError) -
     Err(error)
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SqlFileInfo {
+    pub name: String,
+    pub size_bytes: u64,
+}
+
+/// What the run dialog shows about the picked file.
+#[tauri::command]
+pub async fn sql_file_info(path: String) -> AppResult<SqlFileInfo> {
+    let path = Path::new(&path);
+    let size_bytes = logged("sql_file_info", std::fs::metadata(path).map_err(Into::into))?.len();
+    Ok(SqlFileInfo {
+        name: path
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
+        size_bytes,
+    })
+}
+
 /// Runs a SQL file on its own connection, streaming it from disk.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
@@ -488,15 +580,28 @@ pub async fn run_sql_file<R: Runtime>(
     let key = format!("file:{execution_id}");
     let client = logged("run_sql_file", s.pinned(&key, &database).await)?;
     let token = track_task(&state, &execution_id, Some(client.canceller()));
+    drop(client);
     let started = Instant::now();
+    let target = Target {
+        session: &s,
+        key: &key,
+        database: &database,
+    };
     let result = run_file(
-        &client,
+        &target,
         Path::new(&path),
         &options,
         &token,
         &execution_id,
-        |progress| {
-            let _ = app.emit(PROGRESS_EVENT, progress);
+        |signal| match signal {
+            Signal::Progress(progress) => {
+                let _ = app.emit(PROGRESS_EVENT, progress);
+            }
+            Signal::Reconnected(client) => {
+                if let Some(task) = state.running_tasks.lock().unwrap().get_mut(&execution_id) {
+                    task.canceller = Some(client.canceller());
+                }
+            }
         },
     )
     .await;
@@ -657,8 +762,15 @@ mod live_tests {
         row.get(0)
     }
 
+    const KEY: &str = "file:test";
+
+    /// The script's connection: a new one after a run replaced it.
+    async fn client(s: &PgSession) -> Arc<PgClient> {
+        s.pinned(KEY, "shop").await.unwrap()
+    }
+
     async fn run(
-        client: &PgClient,
+        s: &PgSession,
         path: &Path,
         stop_on_error: bool,
         single_transaction: bool,
@@ -667,8 +779,13 @@ mod live_tests {
             stop_on_error,
             single_transaction,
         };
+        let target = Target {
+            session: s,
+            key: KEY,
+            database: "shop",
+        };
         run_file(
-            client,
+            &target,
             path,
             &options,
             &CancelToken::default(),
@@ -683,7 +800,7 @@ mod live_tests {
     #[ignore]
     async fn live_runs_a_large_dump_in_every_mode() {
         let s = live_session().await;
-        let client = s.pinned("file:test", "shop").await.unwrap();
+        let client = client(&s).await;
         let path = generate("agent_scripts_20mb.sql");
         let size = std::fs::metadata(&path).unwrap().len();
         assert!(size > 18_000_000, "{size}");
@@ -691,7 +808,7 @@ mod live_tests {
         // Continue past the error: everything but the bad statement lands.
         reset(&client).await;
         let started = Instant::now();
-        let done = run(&client, &path, false, false).await;
+        let done = run(&s, &path, false, false).await;
         eprintln!(
             "script of {size} bytes, {} statements: {} ms",
             done.statements,
@@ -731,7 +848,7 @@ mod live_tests {
 
         // Stop at the error: what ran before it stays.
         reset(&client).await;
-        let done = run(&client, &path, true, false).await;
+        let done = run(&s, &path, true, false).await;
         assert!(done.stopped && done.error_count == 1);
         let before = (BAD_STATEMENT * ROWS_PER_INSERT) as i64;
         assert_eq!(count(&client).await, before);
@@ -745,7 +862,7 @@ mod live_tests {
         )
         .await
         .unwrap();
-        let done = run(&client, &path, false, true).await;
+        let done = run(&s, &path, false, true).await;
         assert!(done.stopped && done.rolled_back && done.error_count == 1);
         assert_eq!(count(&client).await, 0);
         assert!(!function_exists(&client).await);
@@ -758,7 +875,7 @@ mod live_tests {
              COPY public.agent_scripts_big FROM stdin;\n3\td\te\n\\.\nSELECT 1",
         )
         .unwrap();
-        let done = run(&client, &clean, true, true).await;
+        let done = run(&s, &clean, true, true).await;
         assert_eq!(done.error_count, 0, "{:?}", done.errors);
         assert!(!done.rolled_back);
         assert_eq!(done.statements, 3);
@@ -770,7 +887,7 @@ mod live_tests {
             "COPY public.agent_scripts_big FROM stdin;\n9\tx\ty\n",
         )
         .unwrap();
-        let done = run(&client, &clean, false, false).await;
+        let done = run(&s, &clean, false, false).await;
         assert_eq!(done.error_count, 1);
         assert_eq!(count(&client).await, 3);
 
@@ -780,7 +897,7 @@ mod live_tests {
             "COPY public.agent_scripts_big FROM stdin;\n10\tx\ty\nnot-a-number\tx\ty\n\\.\nINSERT INTO public.agent_scripts_big VALUES (11, 'k', 'k')",
         )
         .unwrap();
-        let done = run(&client, &clean, false, false).await;
+        let done = run(&s, &clean, false, false).await;
         assert_eq!(done.error_count, 1, "{:?}", done.errors);
         assert!(done.errors[0].message.contains("integer"));
         assert_eq!(count(&client).await, 4);
@@ -804,6 +921,11 @@ mod live_tests {
     async fn live_cancelling_stops_a_running_script() {
         let s = live_session().await;
         let client = s.pinned("file:cancel", "shop").await.unwrap();
+        let target = Target {
+            session: &s,
+            key: "file:cancel",
+            database: "shop",
+        };
         let path = std::env::temp_dir().join("agent_scripts_cancel.sql");
         std::fs::write(&path, "SELECT 1;\nSELECT pg_sleep(30);\nSELECT 2;").unwrap();
         let token = CancelToken::default();
@@ -816,7 +938,7 @@ mod live_tests {
         });
         let started = Instant::now();
         let done = run_file(
-            &client,
+            &target,
             &path,
             &ScriptOptions::default(),
             &token,

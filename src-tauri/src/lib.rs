@@ -2,6 +2,7 @@ mod assistant;
 mod commands;
 mod connection;
 mod connections_io;
+mod csv_import;
 mod error;
 mod export;
 mod logging;
@@ -72,6 +73,9 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
         commands::assistant_workdir,
         commands::open_log_dir,
         script_file::run_sql_file,
+        script_file::sql_file_info,
+        csv_import::preview_csv,
+        csv_import::import_csv,
     ])
 }
 
