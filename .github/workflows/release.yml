@@ -75,3 +75,25 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+  # The installers are named after productName ("Postgres Studio"), and GitHub
+  # turns the space into a dot. Give them back the lowercase names the site's
+  # download and apt scripts fetch (postgres-studio_<version>_<arch>.deb, ...).
+  tidy-asset-names:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Rename release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[] | [.apiUrl, .name] | @tsv' |
+          while IFS=$'\t' read -r url name; do
+            new="${name/#Postgres.Studio/postgres-studio}"
+            if [ "$new" != "$name" ]; then
+              echo "$name -> $new"
+              gh api -X PATCH "$url" -f name="$new" --silent
+            fi
+          done
