@@ -4,7 +4,6 @@ import React, { useEffect } from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import { AppErrorBoundary } from "./components/layout/AppErrorBoundary";
-import "./lib/monaco";
 import "./index.css";
 import { installErrorLogging } from "./lib/log";
 import { applyTheme, getStoredTheme } from "./lib/themes";

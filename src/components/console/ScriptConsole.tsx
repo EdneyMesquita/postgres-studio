@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef } from "react";
 import type * as Monaco from "monaco-editor";
 import { useConnectionsStore } from "../../store/connectionsStore";
 import type { Tab } from "../../store/sessionsStore";
@@ -8,8 +8,12 @@ import { DEFAULT_CONSOLE_SPLIT, useUiStore } from "../../store/uiStore";
 import { useAssistantStore } from "../../store/assistantStore";
 import { SplitPane } from "../ui/SplitPane";
 import { InlineAskStrip } from "../assistant/InlineAskStrip";
-import { ConsoleEditor, runRequestOf } from "./ConsoleEditor";
-import type { RunRequest } from "./ConsoleEditor";
+import { runRequestOf } from "./runRequest";
+import type { RunRequest } from "./runRequest";
+
+// Monaco (and the SQL language on it) loads with the first console shown,
+// not with the app: most of the startup bundle was the editor.
+const ConsoleEditor = lazy(() => import("./ConsoleEditor").then((m) => ({ default: m.ConsoleEditor })));
 import { ConsoleOutputPane } from "./ConsoleOutputPane";
 import { ConsoleToolbar } from "./ConsoleToolbar";
 
@@ -108,14 +112,16 @@ export function ScriptConsole({ tab, active = true }: { tab: Tab; active?: boole
         defaultRatio={DEFAULT_CONSOLE_SPLIT}
         ariaLabel="Resize editor and output"
         first={
-          <ConsoleEditor
-            consoleKey={key}
-            script={script}
-            onRun={handleRun}
-            onEditor={onEditor}
-            proposal={proposal}
-            errorAt={errorAt}
-          />
+          <Suspense fallback={<div className="h-full bg-editor" aria-busy="true" />}>
+            <ConsoleEditor
+              consoleKey={key}
+              script={script}
+              onRun={handleRun}
+              onEditor={onEditor}
+              proposal={proposal}
+              errorAt={errorAt}
+            />
+          </Suspense>
         }
         second={<ConsoleOutputPane tab={tab} session={consoleSession} />}
       />
