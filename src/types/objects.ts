@@ -65,3 +65,23 @@ export interface LockRow {
   queryAgeMs: number | null;
   own: boolean;
 }
+
+/** A role of the server. */
+export interface RoleInfo {
+  name: string;
+  canLogin: boolean;
+  superuser: boolean;
+  createDb: boolean;
+  createRole: boolean;
+  replication: boolean;
+  bypassRls: boolean;
+  inherit: boolean;
+  /** -1 for no limit. */
+  connectionLimit: number;
+  /** As the server writes it; null when it never expires. */
+  validUntil: string | null;
+  memberOf: string[];
+  comment: string | null;
+  /** A predefined pg_* role. */
+  system: boolean;
+}

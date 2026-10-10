@@ -94,6 +94,46 @@ pub async fn run_extension_action(
     Ok(())
 }
 
+/// A role of the server, as `pg_roles` describes it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleInfo {
+    pub name: String,
+    pub can_login: bool,
+    pub superuser: bool,
+    pub create_db: bool,
+    pub create_role: bool,
+    pub replication: bool,
+    pub bypass_rls: bool,
+    pub inherit: bool,
+    /// -1 for no limit.
+    pub connection_limit: i32,
+    /// As the server writes it, `infinity` included; null when it never expires.
+    pub valid_until: Option<String>,
+    /// The roles this one is a member of.
+    pub member_of: Vec<String>,
+    pub comment: Option<String>,
+    /// A predefined `pg_*` role.
+    pub system: bool,
+}
+
+pub async fn list_roles(client: &PgClient) -> AppResult<Vec<RoleInfo>> {
+    let sql = "SELECT coalesce(json_agg(x ORDER BY x.system, x.name), '[]') FROM (
+        SELECT r.rolname AS name, r.rolcanlogin AS \"canLogin\", r.rolsuper AS superuser,
+               r.rolcreatedb AS \"createDb\", r.rolcreaterole AS \"createRole\",
+               r.rolreplication AS replication, r.rolbypassrls AS \"bypassRls\",
+               r.rolinherit AS inherit, r.rolconnlimit AS \"connectionLimit\",
+               r.rolvaliduntil::text AS \"validUntil\",
+               coalesce((SELECT json_agg(g.rolname ORDER BY g.rolname)
+                         FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid
+                         WHERE m.member = r.oid), '[]') AS \"memberOf\",
+               shobj_description(r.oid, 'pg_authid') AS comment,
+               r.rolname LIKE 'pg\\_%' AS system
+        FROM pg_roles r
+    ) x";
+    Ok(json_query(client, sql).await?.unwrap_or_default())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -325,6 +365,54 @@ mod live_tests {
             .batch_execute("DROP SCHEMA agent_objects_ext CASCADE")
             .await
             .unwrap();
+        s.shutdown().await;
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn live_roles() {
+        use crate::pg::objects::list_roles;
+        let s = session().await;
+        let c = s.client("shop").await.unwrap();
+        let drop =
+            "DROP ROLE IF EXISTS agent_objects_member; DROP ROLE IF EXISTS agent_objects_group;";
+        c.client.batch_execute(drop).await.unwrap();
+        c.client
+            .batch_execute(
+                "CREATE ROLE agent_objects_group NOLOGIN CREATEDB;
+                 CREATE ROLE agent_objects_member LOGIN CONNECTION LIMIT 5 VALID UNTIL '2099-01-01 00:00:00+00' IN ROLE agent_objects_group;
+                 COMMENT ON ROLE agent_objects_member IS 'it''s a test';",
+            )
+            .await
+            .unwrap();
+        let roles = list_roles(&c).await.unwrap();
+        let member = roles
+            .iter()
+            .find(|r| r.name == "agent_objects_member")
+            .unwrap();
+        assert!(member.can_login && !member.superuser && !member.system);
+        assert_eq!(member.connection_limit, 5);
+        assert_eq!(member.member_of, ["agent_objects_group"]);
+        assert!(member
+            .valid_until
+            .as_deref()
+            .unwrap()
+            .starts_with("2099-01-01"));
+        assert_eq!(member.comment.as_deref(), Some("it's a test"));
+        let group = roles
+            .iter()
+            .find(|r| r.name == "agent_objects_group")
+            .unwrap();
+        assert!(!group.can_login && group.create_db && group.member_of.is_empty());
+        assert_eq!(group.connection_limit, -1);
+        assert!(group.valid_until.is_none());
+        let postgres = roles.iter().find(|r| r.name == "postgres").unwrap();
+        assert!(postgres.superuser);
+        assert!(roles.iter().any(|r| r.system && r.name.starts_with("pg_")));
+        // the predefined roles come last
+        let first_system = roles.iter().position(|r| r.system).unwrap();
+        assert!(roles[first_system..].iter().all(|r| r.system));
+        c.client.batch_execute(drop).await.unwrap();
         s.shutdown().await;
     }
 }

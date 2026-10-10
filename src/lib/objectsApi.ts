@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ActivityRow, AvailableExtension, ExtensionAction, ExtensionInfo, LockRow } from "../types/objects";
+import type { ActivityRow, AvailableExtension, ExtensionAction, ExtensionInfo, LockRow, RoleInfo } from "../types/objects";
 
 /** The commands for extensions, activity, roles and maintenance. */
 export const objectsApi = {
@@ -27,4 +27,7 @@ export const objectsApi = {
    */
   signalBackend: (sessionId: string, database: string, pid: number, terminate: boolean) =>
     invoke<boolean>("signal_backend", { sessionId, database, pid, terminate }),
+
+  /** The server's roles; they are shared by every database. */
+  listRoles: (sessionId: string, database: string) => invoke<RoleInfo[]>("list_roles", { sessionId, database }),
 };

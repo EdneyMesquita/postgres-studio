@@ -1,4 +1,4 @@
-import { Activity, Copy, FileCode, FolderPlus, ListTree, Pencil, Plug, RefreshCw, SquareTerminal, Table, Trash2, Unplug, Workflow } from "lucide-react";
+import { Activity, Copy, FileCode, FolderPlus, ListTree, Pencil, Plug, Puzzle, RefreshCw, SquareTerminal, Table, Trash2, Unplug, Users, Workflow } from "lucide-react";
 import { toast } from "sonner";
 import type { MenuEntry } from "@/components/common/ActionMenu";
 
@@ -51,6 +51,8 @@ interface ConnectionMenu {
   onDisconnect: () => void;
   onEdit: () => void;
   onDelete: () => void;
+  /** The server's roles; offered while connected. */
+  onRoles?: () => void;
 }
 
 export function connectionMenuEntries(m: ConnectionMenu): MenuEntry[] {
@@ -58,6 +60,7 @@ export function connectionMenuEntries(m: ConnectionMenu): MenuEntry[] {
     m.connected
       ? { label: "Disconnect", icon: Unplug, onSelect: m.onDisconnect }
       : { label: "Connect", icon: Plug, onSelect: m.onConnect },
+    ...(m.connected && m.onRoles ? [{ label: "Roles…", icon: Users, onSelect: m.onRoles }] : []),
     { label: "Edit connection...", icon: Pencil, onSelect: m.onEdit },
     { separator: true },
     { label: "Delete connection...", icon: Trash2, danger: true, onSelect: m.onDelete },
@@ -69,6 +72,7 @@ interface DatabaseMenu {
   connectionName: string;
   onOpenConsole: () => void;
   onActivity: () => void;
+  onExtensions: () => void;
   onRefresh: () => void;
 }
 
@@ -77,6 +81,7 @@ export function databaseMenuEntries(m: DatabaseMenu): MenuEntry[] {
     { heading: `${m.database} on ${m.connectionName}` },
     { label: `Open SQL console on ${m.database}`, icon: SquareTerminal, onSelect: m.onOpenConsole },
     { label: "Server activity", icon: Activity, onSelect: m.onActivity },
+    { label: "Manage extensions…", icon: Puzzle, onSelect: m.onExtensions },
     { label: "Refresh", icon: RefreshCw, onSelect: m.onRefresh },
     { label: "Copy name", icon: Copy, onSelect: () => copyName(m.database) },
   ];

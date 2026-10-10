@@ -8,7 +8,7 @@ use crate::activity::{self, ActivityRow, LockRow};
 use crate::commands::on_session;
 use crate::error::{AppError, AppResult};
 use crate::logging::Op;
-use crate::pg::objects::{self, AvailableExtension, ExtensionAction, ExtensionInfo};
+use crate::pg::objects::{self, AvailableExtension, ExtensionAction, ExtensionInfo, RoleInfo};
 use crate::pg::PgSession;
 use crate::state::AppState;
 
@@ -139,6 +139,21 @@ pub async fn signal_backend(
             }
         );
         Ok(signalled)
+    })
+    .await
+}
+
+/// The server's roles; they belong to the cluster, so any database will do.
+#[tauri::command]
+pub async fn list_roles(
+    state: State<'_, AppState>,
+    session_id: String,
+    database: String,
+) -> AppResult<Vec<RoleInfo>> {
+    let op = Op::new("listRoles", &database, None);
+    on_session(&state, &session_id, op, async |s| {
+        let client = s.client(&database).await?;
+        objects::list_roles(&client).await
     })
     .await
 }
