@@ -553,7 +553,7 @@ async fn session(state: &AppState, session_id: &str) -> AppResult<Arc<PgSession>
 }
 
 /// Runs a database operation, logging it if it fails or is slow.
-async fn on_session<T>(
+pub(crate) async fn on_session<T>(
     state: &AppState,
     session_id: &str,
     op: Op<'_>,

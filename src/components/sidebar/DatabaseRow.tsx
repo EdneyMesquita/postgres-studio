@@ -6,6 +6,7 @@ import type { TabConnection } from "../../store/sessionsStore";
 import type { DatabaseInfo } from "../../types/pg";
 import { RowContextMenu } from "@/components/common/ActionMenu";
 import { formatBytes } from "@/lib/format";
+import { ExtensionsGroup } from "../objects/ExtensionsGroup";
 import { SchemaRow } from "./SchemaRow";
 import { TreeNote } from "./TreeNote";
 import { TreeRow } from "./TreeRow";
@@ -90,6 +91,9 @@ export function DatabaseRow({ db, sessionId, connection, depth, query }: Databas
               query={query}
             />
           ))}
+          {!query && node?.loaded && (
+            <ExtensionsGroup database={db.name} sessionId={sessionId} connection={connection} depth={depth + 1} />
+          )}
         </div>
       )}
     </>

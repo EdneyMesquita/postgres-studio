@@ -6,6 +6,7 @@ mod error;
 mod export;
 mod logging;
 mod models;
+mod object_commands;
 mod paths;
 mod pg;
 mod saved_scripts;
@@ -70,6 +71,9 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
         commands::assistant_answer,
         commands::assistant_workdir,
         commands::open_log_dir,
+        object_commands::list_extensions,
+        object_commands::list_available_extensions,
+        object_commands::extension_action,
     ])
 }
 
