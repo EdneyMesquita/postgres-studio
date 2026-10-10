@@ -31,7 +31,7 @@ const STATE_CLASS: Record<string, string> = {
 
 function Toggle({ label, checked, onChange, title }: { label: string; checked: boolean; onChange: (v: boolean) => void; title?: string }) {
   return (
-    <label className="flex cursor-pointer items-center gap-1.5 text-sm text-fg-2" title={title}>
+    <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-sm text-fg-2" title={title}>
       <Switch size="sm" checked={checked} onCheckedChange={onChange} />
       <span className="whitespace-nowrap">{label}</span>
     </label>
@@ -132,7 +132,7 @@ export const ActivityTabView = memo(function ActivityTabView({ tab, shown }: { t
 
   return (
     <div className="@container flex h-full min-h-0 flex-col bg-editor">
-      <div className="flex h-9 flex-none items-center gap-3 border-b border-line pr-2 pl-2.5">
+      <div className="flex h-9 flex-none items-center gap-3 overflow-hidden border-b border-line pr-2 pl-2.5">
         <span
           className="inline-flex h-[26px] min-w-0 shrink items-center gap-1.5 rounded-md bg-fg/6 px-2 text-sm text-fg-2"
           title={`Activity of the server behind ${tab.database} on ${tab.connection.name}`}
@@ -159,14 +159,14 @@ export const ActivityTabView = memo(function ActivityTabView({ tab, shown }: { t
           <Toggle label="All locks" checked={allLocks} onChange={setAllLocks} title="Off: only locks that wait or are waited on" />
         )}
         <span className="flex-1" />
-        <span className="text-sm text-fg-3 tabular-nums @max-[760px]:hidden">
+        <span className="truncate text-sm whitespace-nowrap text-fg-3 tabular-nums @max-[1040px]:hidden">
           {view === "sessions" ? (rows ? `${shownRows.length} of ${rows.length} sessions` : "") : locks ? `${locks.length} locks` : ""}
           {updated && ` · ${updated.toLocaleTimeString()}`}
         </span>
         <Toggle label="Auto-refresh" checked={auto} onChange={setAuto} title={`Read again every ${REFRESH_MS / 1000} s while this tab is shown`} />
         <Button variant="ghost" title="Read again now" disabled={loading} onClick={() => void load()}>
           <RefreshCw className={cn(loading && "animate-spin")} />
-          <span className="@max-[640px]:hidden">Refresh</span>
+          <span className="@max-[900px]:hidden">Refresh</span>
         </Button>
       </div>
 
