@@ -2,6 +2,7 @@ mod assistant;
 mod commands;
 mod connection;
 mod connections_io;
+mod dump;
 mod error;
 mod export;
 mod logging;
@@ -71,6 +72,10 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
         commands::assistant_answer,
         commands::assistant_workdir,
         commands::open_log_dir,
+        dump::pg_tools_info,
+        dump::backup_format,
+        dump::dump_database,
+        dump::restore_database,
     ])
 }
 

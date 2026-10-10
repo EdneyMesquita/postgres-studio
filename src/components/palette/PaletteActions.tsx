@@ -1,5 +1,7 @@
 import {
   Database,
+  DatabaseBackup,
+  DatabaseZap,
   FolderOpen,
   Moon,
   PanelRight,
@@ -16,6 +18,7 @@ import type { ReactNode } from "react";
 import { CommandGroup, CommandItem, CommandShortcut } from "@/components/ui/command";
 import { api } from "../../lib/tauri";
 import { SPLIT_LAYOUT_ORDER, SPLIT_LAYOUTS } from "../../lib/editorLayout";
+import { useDumpStore } from "../../store/dumpStore";
 import { useEditorLayoutStore } from "../../store/editorLayoutStore";
 import { selectActiveTab, useSessionsStore } from "../../store/sessionsStore";
 import { LayoutIcon } from "../tabs/LayoutPicker";
@@ -77,6 +80,22 @@ export function PaletteActions({ search, run }: PaletteActionsProps) {
             .openDiagram(tab.connection, tab.database, tab.schema, tab.kind === "table" ? tab.table : undefined),
       });
     }
+    actions.push(
+      {
+        id: "backup-database",
+        icon: <DatabaseBackup />,
+        label: `Back up ${tab.database} with pg_dump`,
+        where: tab.connection.name,
+        perform: () => useDumpStore.getState().open("backup", tab.connection, tab.database),
+      },
+      {
+        id: "restore-database",
+        icon: <DatabaseZap />,
+        label: `Restore a backup into ${tab.database}`,
+        where: tab.connection.name,
+        perform: () => useDumpStore.getState().open("restore", tab.connection, tab.database),
+      },
+    );
     actions.push({
       id: "open-to-side",
       icon: <PanelRight />,
