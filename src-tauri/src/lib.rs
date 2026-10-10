@@ -70,6 +70,7 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
         commands::assistant_answer,
         commands::assistant_workdir,
         commands::open_log_dir,
+        commands::graph_catalog,
     ])
 }
 

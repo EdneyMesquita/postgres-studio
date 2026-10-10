@@ -202,3 +202,12 @@ export const api = {
   /** Where the agents run, for resuming a session in a terminal. */
   assistantWorkdir: () => invoke<string>("assistant_workdir"),
 };
+
+import type { GraphCatalog } from "../types/pg";
+
+/** Graph and vector features (Apache AGE, pgvector, SQL/PGQ). */
+export const graphApi = {
+  /** Which of the features the database has, and the AGE graphs in it. */
+  graphCatalog: (sessionId: string, database: string) =>
+    invoke<GraphCatalog>("graph_catalog", { sessionId, database }),
+};

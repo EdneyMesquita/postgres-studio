@@ -61,19 +61,30 @@ pub struct SchemaInfo {
 }
 
 pub async fn list_schemas(client: &PgClient) -> AppResult<Vec<SchemaInfo>> {
-    let sql = "SELECT coalesce(json_agg(x ORDER BY x.system, x.name), '[]') FROM (
+    // Apache AGE's own schema and the ones it makes for its graphs belong
+    // to no extension in `pg_depend`, yet hold nothing to browse. `ag_graph`
+    // exists only with AGE, so it is read only after checking for it.
+    let age_graphs = if super::graph::age_installed(client).await.unwrap_or(false) {
+        "OR n.nspname = 'ag_catalog' OR n.oid IN (SELECT namespace::oid FROM ag_catalog.ag_graph)"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "SELECT coalesce(json_agg(x ORDER BY x.system, x.name), '[]') FROM (
         SELECT n.nspname AS name,
                pg_get_userbyid(n.nspowner) AS owner,
                (n.nspname IN ('pg_catalog', 'information_schema') OR n.nspname LIKE 'pg\\_%'
                 -- created by an extension, like TimescaleDB's _timescaledb_*
                 OR EXISTS (SELECT 1 FROM pg_depend d
                            WHERE d.classid = 'pg_namespace'::regclass AND d.objid = n.oid
-                             AND d.deptype = 'e')) AS system,
+                             AND d.deptype = 'e')
+                {age_graphs}) AS system,
                obj_description(n.oid, 'pg_namespace') AS comment
         FROM pg_namespace n
         WHERE n.nspname NOT LIKE 'pg\\_toast%' AND n.nspname NOT LIKE 'pg\\_temp\\_%'
-    ) x";
-    Ok(json_query(client, sql).await?.unwrap_or_default())
+    ) x"
+    );
+    Ok(json_query(client, &sql).await?.unwrap_or_default())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
