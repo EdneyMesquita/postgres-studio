@@ -258,3 +258,89 @@ export interface SchemaDiagram {
   tables: DiagramTable[];
   foreignKeys: DiagramForeignKey[];
 }
+
+export interface ScriptOptions {
+  /** Stop at the first failing statement; otherwise go on and list them. */
+  stopOnError: boolean;
+  /** Run it all in one transaction, rolled back on an error. */
+  singleTransaction: boolean;
+}
+
+export interface SqlFileInfo {
+  name: string;
+  sizeBytes: number;
+}
+
+export interface ScriptProgress {
+  executionId: string;
+  statementsDone: number;
+  bytesRead: number;
+  totalBytes: number;
+  errors: number;
+  /** The start of the statement running now. */
+  currentPreview: string;
+}
+
+export interface ScriptError {
+  /** 1-based position among the statements. */
+  index: number;
+  /** Line the statement starts on. */
+  line: number;
+  message: string;
+  code: string | null;
+}
+
+export interface ScriptWarning {
+  line: number;
+  message: string;
+}
+
+export interface ScriptSummary {
+  statements: number;
+  /** The first errors; `errorCount` is how many there were. */
+  errors: ScriptError[];
+  errorCount: number;
+  warnings: ScriptWarning[];
+  warningCount: number;
+  copiedRows: number;
+  bytesRead: number;
+  totalBytes: number;
+  elapsedMs: number;
+  cancelled: boolean;
+  /** Ended at an error, before the end of the file. */
+  stopped: boolean;
+  rolledBack: boolean;
+}
+
+export interface CsvOptions {
+  /** One character; "\t" is a tab. */
+  delimiter: string;
+  quote: string;
+  /** The first row names the columns and is not loaded. */
+  header: boolean;
+  /** The text that means NULL; empty: an empty field is NULL. */
+  nullString: string;
+}
+
+export interface CsvPreview {
+  headers: string[] | null;
+  rows: (string | null)[][];
+  /** The widest row seen. */
+  columns: number;
+  totalBytes: number;
+  /** The file goes on past the rows shown. */
+  more: boolean;
+}
+
+export interface CsvProgress {
+  executionId: string;
+  bytesRead: number;
+  totalBytes: number;
+  rows: number;
+}
+
+export interface CsvImportSummary {
+  rows: number;
+  bytes: number;
+  elapsedMs: number;
+}

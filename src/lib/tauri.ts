@@ -18,12 +18,18 @@ import type {
   ExplainResult,
   ExportFormat,
   ExportSummary,
+  CsvImportSummary,
+  CsvOptions,
+  CsvPreview,
   ResultColumn,
   Row,
   RowEdit,
   SchemaDiagram,
   SchemaInfo,
   SchemaObjects,
+  ScriptOptions,
+  ScriptSummary,
+  SqlFileInfo,
   SqlRun,
   TableInfo,
   TxState,
@@ -201,4 +207,35 @@ export const api = {
 
   /** Where the agents run, for resuming a session in a terminal. */
   assistantWorkdir: () => invoke<string>("assistant_workdir"),
+
+  /** The name and size of a file picked to run. */
+  sqlFileInfo: (path: string) => invoke<SqlFileInfo>("sql_file_info", { path }),
+
+  /** Runs a SQL file, streamed from disk; progress arrives as `script-progress` events. */
+  runSqlFile: (
+    sessionId: string,
+    database: string,
+    path: string,
+    options: ScriptOptions,
+    executionId: string,
+  ) => invoke<ScriptSummary>("run_sql_file", { sessionId, database, path, options, executionId }),
+
+  /** The first rows of a CSV file as the options would read them. */
+  previewCsv: (path: string, options: CsvOptions) => invoke<CsvPreview>("preview_csv", { path, options }),
+
+  /**
+   * Loads a CSV file into a table. `mapping` has one entry per column of the
+   * file: the table column it goes to, or null to skip it. Progress arrives
+   * as `csv-import-progress` events.
+   */
+  importCsv: (
+    sessionId: string,
+    database: string,
+    schema: string,
+    table: string,
+    path: string,
+    mapping: (string | null)[],
+    options: CsvOptions,
+    executionId: string,
+  ) => invoke<CsvImportSummary>("import_csv", { sessionId, database, schema, table, path, mapping, options, executionId }),
 };

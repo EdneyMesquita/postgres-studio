@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { Download, ListTree, RefreshCw, Rows3, SquareTerminal } from "lucide-react";
+import { Download, ListTree, RefreshCw, Rows3, SquareTerminal, Upload } from "lucide-react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { toast } from "sonner";
 import { api } from "../../lib/tauri";
@@ -11,6 +11,7 @@ import type { TableTab } from "../../store/sessionsStore";
 import { useUiStore } from "../../store/uiStore";
 import type { MainTab } from "../../store/uiStore";
 import { useAssistantStore } from "../../store/assistantStore";
+import { openImportCsv } from "../../store/transferStore";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -107,6 +108,17 @@ export const TableTabView = memo(function TableTabView({ tab, active, shown }: {
                 <DropdownMenuItem onSelect={() => void exportTable(tab, session.sessionId, "json", false)}>JSON</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
+            {["r", "p"].includes(tab.relkind) && (
+              <Button
+                variant="ghost"
+                title={session.readOnly ? "This connection is read-only" : "Load a CSV file into this table"}
+                disabled={session.readOnly}
+                onClick={() => openImportCsv(tab.connection, tab.database, tab.schema, tab.table)}
+              >
+                <Upload />
+                <span className="max-sm:hidden @max-[480px]:hidden">Import</span>
+              </Button>
+            )}
           </>
         )}
       </div>

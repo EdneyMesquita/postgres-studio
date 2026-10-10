@@ -1,4 +1,4 @@
-import { Copy, FileCode, FolderPlus, ListTree, Pencil, Plug, RefreshCw, SquareTerminal, Table, Trash2, Unplug, Workflow } from "lucide-react";
+import { Copy, FileCode, FileUp, FolderPlus, ListTree, Pencil, Plug, RefreshCw, SquareTerminal, Table, Trash2, Unplug, Upload, Workflow } from "lucide-react";
 import { toast } from "sonner";
 import type { MenuEntry } from "@/components/common/ActionMenu";
 
@@ -68,6 +68,7 @@ interface DatabaseMenu {
   database: string;
   connectionName: string;
   onOpenConsole: () => void;
+  onRunFile: () => void;
   onRefresh: () => void;
 }
 
@@ -75,6 +76,7 @@ export function databaseMenuEntries(m: DatabaseMenu): MenuEntry[] {
   return [
     { heading: `${m.database} on ${m.connectionName}` },
     { label: `Open SQL console on ${m.database}`, icon: SquareTerminal, onSelect: m.onOpenConsole },
+    { label: "Run SQL file...", icon: FileUp, onSelect: m.onRunFile },
     { label: "Refresh", icon: RefreshCw, onSelect: m.onRefresh },
     { label: "Copy name", icon: Copy, onSelect: () => copyName(m.database) },
   ];
@@ -107,6 +109,9 @@ interface RelationMenu {
   onShowDefinition: () => void;
   /** Tables only: the schema diagram around it. */
   onDiagram?: () => void;
+  /** Tables only: load a CSV file into it; disabled on a read-only connection. */
+  onImportCsv?: () => void;
+  importDisabled?: boolean;
 }
 
 export function relationMenuEntries(m: RelationMenu): MenuEntry[] {
@@ -125,6 +130,9 @@ export function relationMenuEntries(m: RelationMenu): MenuEntry[] {
     { label: "Query in SQL", icon: SquareTerminal, onSelect: m.onOpenSql },
     { label: "Show DDL in a console", icon: FileCode, onSelect: m.onShowDefinition },
     ...(m.onDiagram ? [{ label: "Show in schema diagram", icon: Workflow, onSelect: m.onDiagram }] : []),
+    ...(m.onImportCsv
+      ? [{ label: "Import CSV...", icon: Upload, disabled: m.importDisabled, onSelect: m.onImportCsv }]
+      : []),
     { separator: true },
     { label: "Copy name", icon: Copy, onSelect: () => copyName(m.name) },
     { label: "Copy qualified name", icon: Copy, onSelect: () => copyName(m.qualified) },
