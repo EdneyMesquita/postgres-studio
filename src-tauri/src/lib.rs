@@ -15,6 +15,7 @@ mod ssh_tunnel;
 mod state;
 
 use tauri::Manager;
+use tauri_plugin_window_state::StateFlags;
 
 use assistant::Assistant;
 use saved_scripts::SavedScriptsStore;
@@ -84,6 +85,14 @@ pub fn run() {
         .plugin(logging::plugin())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        // Size, position and maximized state come back from the last run.
+        // Not visibility: the window starts hidden and the page shows it once
+        // it has painted, so it never opens on a blank white frame.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(StateFlags::all() - StateFlags::VISIBLE)
+                .build(),
+        )
         .setup(|app| {
             logging::log_startup(app);
             setup(app).inspect_err(|e| log::error!("startup failed: {e}"))
@@ -100,6 +109,17 @@ pub fn run() {
 }
 
 fn setup<R: tauri::Runtime>(app: &mut tauri::App<R>) -> Result<(), Box<dyn std::error::Error>> {
+    // The page shows the window as soon as it paints. Should it never get
+    // there (a broken bundle, a hung webview), show it anyway.
+    if let Some(window) = app.get_webview_window("main") {
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(4));
+            if !window.is_visible().unwrap_or(true) {
+                log::warn!("the page didn't show the window in time; showing it");
+                let _ = window.show();
+            }
+        });
+    }
     let config_dir = app.path().app_config_dir()?;
     let state =
         AppState::init(&config_dir).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;

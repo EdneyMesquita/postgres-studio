@@ -5,10 +5,60 @@
     <link rel="icon" type="image/png" href="/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Postgres Studio</title>
+    <style>
+      /* Until the app's stylesheet loads: the editor tone of the saved theme. */
+      html { background: #1e1f22; }
+      html[data-theme="light"] { background: #ffffff; }
+      #splash {
+        position: fixed; inset: 0; display: grid; place-items: center;
+        font: 500 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; color: #8b8e98;
+      }
+      #splash > div { display: flex; flex-direction: column; align-items: center; gap: 14px; animation: splash-in 240ms ease-out 120ms both; }
+      #splash svg { width: 56px; height: 56px; }
+      #splash i { display: block; width: 96px; height: 2px; border-radius: 1px; overflow: hidden; background: rgb(139 142 152 / 0.2); }
+      #splash i::after { content: ""; display: block; width: 40%; height: 100%; background: #3574f0; animation: splash-bar 1.1s ease-in-out infinite; }
+      @keyframes splash-in { from { opacity: 0; transform: translateY(4px); } }
+      @keyframes splash-bar { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+      @media (prefers-reduced-motion: reduce) { #splash > div, #splash i::after { animation: none; } }
+    </style>
+    <script>
+      // Same key as src/lib/themes.ts, so the splash matches the app.
+      try {
+        if (localStorage.getItem("postgres-studio-theme") === "light") document.documentElement.dataset.theme = "light";
+      } catch {}
+    </script>
   </head>
 
   <body>
-    <div id="root"></div>
+    <!-- React replaces the splash when it mounts. -->
+    <div id="root">
+      <div id="splash" role="status" aria-label="Loading Postgres Studio">
+        <div>
+          <svg viewBox="0 0 1024 1024" aria-hidden="true">
+            <defs>
+              <linearGradient id="sb" x1="512" y1="262" x2="512" y2="762" gradientUnits="userSpaceOnUse">
+                <stop offset="0" stop-color="#6E9BFF" />
+                <stop offset="1" stop-color="#2A5DC9" />
+              </linearGradient>
+              <clipPath id="sc"><rect x="212" y="262" width="600" height="500" rx="76" /></clipPath>
+            </defs>
+            <rect width="1024" height="1024" rx="200" fill="#191c25" />
+            <g clip-path="url(#sc)">
+              <rect x="212" y="262" width="600" height="500" fill="url(#sb)" />
+              <rect x="212" y="262" width="600" height="150" fill="#B7CDFF" />
+              <path d="M 212 412 H 812 M 212 528 H 812 M 212 644 H 812 M 418 412 V 762" stroke="#163A88" stroke-width="20" opacity=".55" />
+            </g>
+          </svg>
+          <i></i>
+        </div>
+      </div>
+    </div>
+    <script>
+      // The window starts hidden (tauri.conf.json): show it now that the
+      // splash is in the page, before the app's bundle has even loaded. Not
+      // on an animation frame: a hidden window never paints, so it gets none.
+      window.__TAURI_INTERNALS__?.invoke("plugin:window|show", { label: "main" }).catch(() => {});
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
