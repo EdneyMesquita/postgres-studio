@@ -1,4 +1,4 @@
-import { Copy, KeyRound, Link2, Plus, SquareTerminal, Workflow } from "lucide-react";
+import { Copy, KeyRound, Link2, Plus, RefreshCw, SquareTerminal, Workflow } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { useConnectionsStore } from "../../store/connectionsStore";
@@ -6,9 +6,11 @@ import { useConsoleStore } from "../../store/consoleStore";
 import { useSessionsStore } from "../../store/sessionsStore";
 import type { TableTab } from "../../store/sessionsStore";
 import { formatBytes, formatInt } from "@/lib/format";
+import { refreshMatviewSql } from "@/lib/objectsSql";
 import { IndexesTable } from "../objects/IndexesTable";
 import { NewIndexDialog } from "../objects/NewIndexDialog";
 import { TriggersTable } from "../objects/TriggersSection";
+import { openSql } from "../objects/openSql";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { SqlText } from "../console/SqlText";
@@ -93,6 +95,29 @@ export function StructureView({ tab }: { tab: TableTab }) {
             </>
           )}
         </div>
+
+        {isView && info.viewDefinition && (
+          <Section
+            title="Definition"
+            action={
+              info.kind === "m" ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  title="Open REFRESH MATERIALIZED VIEW in a console"
+                  onClick={() => openSql(tab.connection, tab.database, refreshMatviewSql(tab.schema, tab.table, info.indexes))}
+                >
+                  <RefreshCw />
+                  Refresh materialized view
+                </Button>
+              ) : undefined
+            }
+          >
+            <div className="border-b border-line-soft px-3.5 py-2">
+              <SqlText text={info.viewDefinition.trim()} className="whitespace-pre-wrap" />
+            </div>
+          </Section>
+        )}
 
         <Section title="Columns" count={info.columns.length}>
           <table className="w-full border-collapse">

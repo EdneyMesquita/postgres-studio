@@ -15,6 +15,10 @@ mod live_tests {
         DROP TABLE IF EXISTS agent_objects_t CASCADE;
         DROP FUNCTION IF EXISTS agent_objects_fn();";
 
+    const CLEANUP_B: &str = "DROP MATERIALIZED VIEW IF EXISTS agent_objects_b_mv;
+        DROP VIEW IF EXISTS agent_objects_b_v;
+        DROP TABLE IF EXISTS agent_objects_b_t CASCADE;";
+
     #[tokio::test]
     #[ignore]
     async fn live_triggers_and_indexes() {
@@ -92,6 +96,41 @@ mod live_tests {
         assert!(view.view_definition.unwrap().contains("agent_objects_t"));
 
         c.client.batch_execute(CLEANUP).await.unwrap();
+        s.shutdown().await;
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn live_view_definitions_and_matview_indexes() {
+        let s = session().await;
+        let c = s.client("shop").await.unwrap();
+        c.client.batch_execute(CLEANUP_B).await.unwrap();
+        c.client
+            .batch_execute(
+                "CREATE TABLE agent_objects_b_t (id int PRIMARY KEY, name text);
+                 CREATE VIEW agent_objects_b_v AS SELECT id, upper(name) AS shout FROM agent_objects_b_t;
+                 CREATE MATERIALIZED VIEW agent_objects_b_mv AS SELECT id, name FROM agent_objects_b_t;
+                 CREATE UNIQUE INDEX agent_objects_b_mv_id ON agent_objects_b_mv (id);",
+            )
+            .await
+            .unwrap();
+        let view = catalog::describe_table(&c, "public", "agent_objects_b_v")
+            .await
+            .unwrap();
+        assert_eq!(view.kind, "v");
+        let def = view.view_definition.unwrap();
+        assert!(
+            def.contains("upper(name)") && def.contains("agent_objects_b_t"),
+            "{def}"
+        );
+        let mv = catalog::describe_table(&c, "public", "agent_objects_b_mv")
+            .await
+            .unwrap();
+        assert_eq!(mv.kind, "m");
+        assert!(mv.view_definition.is_some());
+        let idx = &mv.indexes[0];
+        assert!(idx.unique && idx.valid && !idx.partial && !idx.expression);
+        c.client.batch_execute(CLEANUP_B).await.unwrap();
         s.shutdown().await;
     }
 }
