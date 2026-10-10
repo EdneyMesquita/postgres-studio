@@ -9,6 +9,9 @@ import {
   ContextMenuLabel,
   ContextMenuSeparator,
   ContextMenuShortcut,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import {
@@ -18,6 +21,9 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuShortcut,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
@@ -34,19 +40,43 @@ export interface MenuAction {
   disabled?: boolean;
 }
 
-/** A menu row: an action, a rule between groups, or a group heading. */
-export type MenuEntry = MenuAction | { separator: true } | { heading: string };
+/** A row that opens a menu of its own beside it. */
+export interface MenuSubmenu {
+  submenu: string;
+  icon?: LucideIcon;
+  entries: MenuEntry[];
+}
+
+/** A menu row: an action, a rule between groups, a group heading, or a submenu. */
+export type MenuEntry = MenuAction | { separator: true } | { heading: string } | MenuSubmenu;
 
 type Parts = {
   Item: typeof ContextMenuItem | typeof DropdownMenuItem;
   Label: typeof ContextMenuLabel | typeof DropdownMenuLabel;
   Separator: typeof ContextMenuSeparator | typeof DropdownMenuSeparator;
   Shortcut: typeof ContextMenuShortcut | typeof DropdownMenuShortcut;
+  Sub: typeof ContextMenuSub | typeof DropdownMenuSub;
+  SubTrigger: typeof ContextMenuSubTrigger | typeof DropdownMenuSubTrigger;
+  SubContent: typeof ContextMenuSubContent | typeof DropdownMenuSubContent;
 };
 
 function Entries({ entries, parts }: { entries: MenuEntry[]; parts: Parts }) {
-  const { Item, Label, Separator, Shortcut } = parts;
+  const { Item, Label, Separator, Shortcut, Sub, SubTrigger, SubContent } = parts;
   return entries.map((entry, i) => {
+    if ("submenu" in entry) {
+      const SubIcon = entry.icon;
+      return (
+        <Sub key={`sub-${entry.submenu}`}>
+          <SubTrigger>
+            {SubIcon ? <SubIcon className="mr-2 size-3.5" /> : <span className="mr-2 w-3.5" />}
+            <span className="flex-1 truncate">{entry.submenu}</span>
+          </SubTrigger>
+          <SubContent>
+            <Entries entries={entry.entries} parts={parts} />
+          </SubContent>
+        </Sub>
+      );
+    }
     if ("separator" in entry) return <Separator key={`sep-${i}`} />;
     if ("heading" in entry) {
       return (
@@ -76,12 +106,18 @@ const contextParts: Parts = {
   Label: ContextMenuLabel,
   Separator: ContextMenuSeparator,
   Shortcut: ContextMenuShortcut,
+  Sub: ContextMenuSub,
+  SubTrigger: ContextMenuSubTrigger,
+  SubContent: ContextMenuSubContent,
 };
 const dropdownParts: Parts = {
   Item: DropdownMenuItem,
   Label: DropdownMenuLabel,
   Separator: DropdownMenuSeparator,
   Shortcut: DropdownMenuShortcut,
+  Sub: DropdownMenuSub,
+  SubTrigger: DropdownMenuSubTrigger,
+  SubContent: DropdownMenuSubContent,
 };
 
 interface RowContextMenuProps {

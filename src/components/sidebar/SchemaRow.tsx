@@ -3,6 +3,7 @@ import { Eye, Folder, FolderOpen, Layers, Layers2, ListOrdered, Sigma, Table, Ty
 import type { LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "../../lib/tauri";
+import { useConnectionsStore } from "../../store/connectionsStore";
 import { useConsoleStore } from "../../store/consoleStore";
 import { groupKey, groupOpen, schemaKey, useExplorerStore } from "../../store/explorerStore";
 import type { ObjectGroup } from "../../store/explorerStore";
@@ -12,6 +13,7 @@ import { useUiStore } from "../../store/uiStore";
 import type { FunctionEntry, RelationEntry, SchemaInfo, TypeEntry } from "../../types/pg";
 import { RowContextMenu } from "@/components/common/ActionMenu";
 import { formatCount } from "@/lib/format";
+import { generateSql, runMaintenance } from "../objects/tableActions";
 import { Highlighted } from "./Highlighted";
 import { TreeNote } from "./TreeNote";
 import { TreeRow } from "./TreeRow";
@@ -157,6 +159,7 @@ function ObjectGroupRows({ group, items, open, depth, onToggle, schema, database
       : null;
   });
   const Icon = group.icon;
+  const readOnly = useConnectionsStore((s) => s.sessions[connection.id]?.readOnly ?? false);
 
   return (
     <>
@@ -254,6 +257,11 @@ function ObjectGroupRows({ group, items, open, depth, onToggle, schema, database
                     onDiagram: ["r", "p", "f"].includes(rel.kind)
                       ? () => useSessionsStore.getState().openDiagram(connection, database, schema, rel.name)
                       : undefined,
+                    kind: rel.kind,
+                    readOnly,
+                    onMaintenance: (action) =>
+                      void runMaintenance({ connection, sessionId, database, schema, table: rel.name }, action),
+                    onGenerate: (kind) => void generateSql({ connection, sessionId, database, schema, table: rel.name }, kind),
                     onShowDefinition: () =>
                       void showDefinition(connection, sessionId, database, schema, rel.name, isSequence ? "sequence" : "table"),
                   })

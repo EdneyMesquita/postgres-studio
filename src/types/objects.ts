@@ -85,3 +85,5 @@ export interface RoleInfo {
   /** A predefined pg_* role. */
   system: boolean;
 }
+
+export type MaintenanceAction = "vacuumAnalyze" | "analyze" | "reindex" | "truncate";

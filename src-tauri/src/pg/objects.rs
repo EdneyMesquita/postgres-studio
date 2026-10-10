@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::catalog::json_query;
-use super::{ident, PgClient};
+use super::{ident, PgClient, PgSession};
 use crate::error::{AppError, AppResult};
 
 /// An extension installed in a database.
@@ -134,9 +134,71 @@ pub async fn list_roles(client: &PgClient) -> AppResult<Vec<RoleInfo>> {
     Ok(json_query(client, sql).await?.unwrap_or_default())
 }
 
+/// A maintenance statement the table menu runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MaintenanceAction {
+    VacuumAnalyze,
+    Analyze,
+    Reindex,
+    /// Empties the table; fails if another table's foreign key points at it.
+    Truncate,
+}
+
+/// The statement for an action, with the table's name quoted.
+pub fn maintenance_sql(schema: &str, table: &str, action: MaintenanceAction) -> String {
+    let name = super::qualified(schema, table);
+    match action {
+        MaintenanceAction::VacuumAnalyze => format!("VACUUM (ANALYZE) {name}"),
+        MaintenanceAction::Analyze => format!("ANALYZE {name}"),
+        MaintenanceAction::Reindex => format!("REINDEX TABLE {name}"),
+        MaintenanceAction::Truncate => format!("TRUNCATE TABLE {name}"),
+    }
+}
+
+/// Runs the statement on a connection of its own: a VACUUM of a large table
+/// takes a while, and must not hold up the lists the shared one serves.
+pub async fn run_maintenance(
+    session: &PgSession,
+    database: &str,
+    schema: &str,
+    table: &str,
+    action: MaintenanceAction,
+) -> AppResult<()> {
+    let key = format!("maintenance:{}", uuid::Uuid::new_v4());
+    let client = session.pinned(&key, database).await?;
+    let result = client
+        .client
+        .batch_execute(&maintenance_sql(schema, table, action))
+        .await;
+    session.release(&key).await;
+    Ok(result?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn maintenance_statements_quote_the_table() {
+        let sql = |a| maintenance_sql("My Schema", "order", a);
+        assert_eq!(
+            sql(MaintenanceAction::VacuumAnalyze),
+            "VACUUM (ANALYZE) \"My Schema\".\"order\""
+        );
+        assert_eq!(
+            sql(MaintenanceAction::Analyze),
+            "ANALYZE \"My Schema\".\"order\""
+        );
+        assert_eq!(
+            sql(MaintenanceAction::Reindex),
+            "REINDEX TABLE \"My Schema\".\"order\""
+        );
+        assert_eq!(
+            sql(MaintenanceAction::Truncate),
+            "TRUNCATE TABLE \"My Schema\".\"order\""
+        );
+    }
 
     #[test]
     fn extension_statements_quote_their_names() {
@@ -413,6 +475,70 @@ mod live_tests {
         let first_system = roles.iter().position(|r| r.system).unwrap();
         assert!(roles[first_system..].iter().all(|r| r.system));
         c.client.batch_execute(drop).await.unwrap();
+        s.shutdown().await;
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn live_maintenance() {
+        use crate::pg::objects::{run_maintenance, MaintenanceAction};
+        let s = session().await;
+        let c = s.client("shop").await.unwrap();
+        c.client
+            .batch_execute(
+                "DROP TABLE IF EXISTS agent_objects_m;
+                 CREATE TABLE agent_objects_m (id int PRIMARY KEY, v text);
+                 INSERT INTO agent_objects_m SELECT g, 'x' FROM generate_series(1, 200) g;
+                 DELETE FROM agent_objects_m WHERE id > 100;",
+            )
+            .await
+            .unwrap();
+        for action in [
+            MaintenanceAction::VacuumAnalyze,
+            MaintenanceAction::Analyze,
+            MaintenanceAction::Reindex,
+        ] {
+            run_maintenance(&s, "shop", "public", "agent_objects_m", action)
+                .await
+                .unwrap_or_else(|e| panic!("{action:?}: {e}"));
+        }
+        // ANALYZE and VACUUM leave their mark in the statistics
+        let stats: Option<bool> = crate::pg::catalog::json_query(
+            &c,
+            "SELECT to_json(last_analyze IS NOT NULL OR last_vacuum IS NOT NULL)
+             FROM pg_stat_user_tables WHERE relname = 'agent_objects_m'",
+        )
+        .await
+        .unwrap();
+        assert_eq!(stats, Some(true));
+        run_maintenance(
+            &s,
+            "shop",
+            "public",
+            "agent_objects_m",
+            MaintenanceAction::Truncate,
+        )
+        .await
+        .unwrap();
+        let rows: Option<i64> =
+            crate::pg::catalog::json_query(&c, "SELECT to_json(count(*)) FROM agent_objects_m")
+                .await
+                .unwrap();
+        assert_eq!(rows, Some(0));
+        // a missing table is an error, not a silent success
+        assert!(run_maintenance(
+            &s,
+            "shop",
+            "public",
+            "agent_objects_missing",
+            MaintenanceAction::Analyze
+        )
+        .await
+        .is_err());
+        c.client
+            .batch_execute("DROP TABLE agent_objects_m")
+            .await
+            .unwrap();
         s.shutdown().await;
     }
 }

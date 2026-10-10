@@ -79,6 +79,7 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
         object_commands::server_locks,
         object_commands::signal_backend,
         object_commands::list_roles,
+        object_commands::run_maintenance,
     ])
 }
 

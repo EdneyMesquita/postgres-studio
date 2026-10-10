@@ -8,7 +8,9 @@ use crate::activity::{self, ActivityRow, LockRow};
 use crate::commands::on_session;
 use crate::error::{AppError, AppResult};
 use crate::logging::Op;
-use crate::pg::objects::{self, AvailableExtension, ExtensionAction, ExtensionInfo, RoleInfo};
+use crate::pg::objects::{
+    self, AvailableExtension, ExtensionAction, ExtensionInfo, MaintenanceAction, RoleInfo,
+};
 use crate::pg::PgSession;
 use crate::state::AppState;
 
@@ -154,6 +156,38 @@ pub async fn list_roles(
     on_session(&state, &session_id, op, async |s| {
         let client = s.client(&database).await?;
         objects::list_roles(&client).await
+    })
+    .await
+}
+
+/// VACUUM (ANALYZE), ANALYZE, REINDEX or TRUNCATE on one table; resolves to
+/// how long it took, in ms. The page asks first for TRUNCATE.
+#[tauri::command]
+pub async fn run_maintenance(
+    state: State<'_, AppState>,
+    session_id: String,
+    database: String,
+    schema: String,
+    table: String,
+    action: MaintenanceAction,
+) -> AppResult<u64> {
+    let target = format!("{schema}.{table}");
+    let op = Op::new("maintenance", &database, Some(&target));
+    on_session(&state, &session_id, op, async |s| {
+        // The server refuses TRUNCATE in a read-only transaction anyway; say
+        // why in the app's words.
+        if action == MaintenanceAction::Truncate {
+            refuse_when_read_only(&s)?;
+        }
+        let started = std::time::Instant::now();
+        objects::run_maintenance(&s, &database, &schema, &table, action).await?;
+        log::info!(
+            "{} [{}] {}",
+            Op::new("maintenance", &database, Some(&target)),
+            s.name,
+            objects::maintenance_sql(&schema, &table, action)
+        );
+        Ok(started.elapsed().as_millis() as u64)
     })
     .await
 }

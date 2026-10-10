@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { ActivityRow, AvailableExtension, ExtensionAction, ExtensionInfo, LockRow, RoleInfo } from "../types/objects";
+import type { ActivityRow, AvailableExtension, ExtensionAction, ExtensionInfo, LockRow, MaintenanceAction, RoleInfo } from "../types/objects";
 
 /** The commands for extensions, activity, roles and maintenance. */
 export const objectsApi = {
@@ -30,4 +30,8 @@ export const objectsApi = {
 
   /** The server's roles; they are shared by every database. */
   listRoles: (sessionId: string, database: string) => invoke<RoleInfo[]>("list_roles", { sessionId, database }),
+
+  /** VACUUM (ANALYZE), ANALYZE, REINDEX or TRUNCATE on a table; resolves to the time it took, in ms. */
+  runMaintenance: (sessionId: string, database: string, schema: string, table: string, action: MaintenanceAction) =>
+    invoke<number>("run_maintenance", { sessionId, database, schema, table, action }),
 };
