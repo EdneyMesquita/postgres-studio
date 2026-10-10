@@ -1,7 +1,14 @@
 import type * as Monaco from "monaco-editor";
-import { api } from "./tauri";
+import { api, graphApi } from "./tauri";
 import { useExplorerStore } from "../store/explorerStore";
+import { useGraphStore } from "../store/graphStore";
+import { cypherBodyAt, cypherSpot } from "./cypher";
+import { cachedProperties, cypherCandidates } from "./cypherCompletion";
+import { indexContextAt, opclassesFor, VECTOR_FUNCTIONS, VECTOR_OPERATORS } from "./pgvector";
 import type { ColumnInfo, SchemaObjects } from "../types/pg";
+
+/** The console's SQL language: PostgreSQL's, with Cypher inside cypher() calls (see studioLanguages). */
+export const SQL_LANGUAGE = "postgres-studio-sql";
 
 /** Where an editor's SQL runs: what its completion lists come from. */
 export interface SqlContext {
@@ -19,7 +26,7 @@ const KEYWORDS = (
   "INSERT INTO VALUES DEFAULT RETURNING UPDATE SET DELETE TRUNCATE BEGIN COMMIT ROLLBACK SAVEPOINT CREATE TABLE VIEW MATERIALIZED INDEX UNIQUE " +
   "PRIMARY KEY FOREIGN REFERENCES CHECK CONSTRAINT ALTER ADD COLUMN DROP RENAME TO CASCADE RESTRICT IF FUNCTION PROCEDURE RETURNS LANGUAGE " +
   "TRIGGER SCHEMA SEQUENCE TYPE ENUM EXPLAIN ANALYZE VERBOSE BUFFERS VACUUM GRANT REVOKE COMMENT FILTER OVER PARTITION WINDOW COALESCE NULLIF " +
-  "CAST INTERVAL TRUE FALSE ON CONFLICT DO NOTHING"
+  "CAST INTERVAL TRUE FALSE ON CONFLICT DO NOTHING GRAPH_TABLE MATCH COLUMNS PROPERTY GRAPH"
 ).split(" ");
 
 const FUNCTIONS = (
@@ -60,6 +67,51 @@ function columnsOf(ctx: SqlContext, schema: string, table: string): Promise<Colu
   return found;
 }
 
+/** What the explorer knows of the database's graphs and extensions, read when it opened. */
+function graphCatalogOf(ctx: SqlContext) {
+  return useGraphStore.getState().nodes[`${ctx.connectionId}/${ctx.database}`]?.catalog ?? null;
+}
+
+type Dressed = Monaco.languages.CompletionItem;
+
+/** Completion inside the Cypher body of a cypher('graph', $$ ... $$) call. */
+async function cypherSuggestions(
+  monaco: typeof Monaco,
+  ctx: SqlContext | null,
+  graphName: string,
+  bodyBefore: string,
+  triggerCharacter: string | undefined,
+  range: Monaco.IRange,
+): Promise<Dressed[]> {
+  const { CompletionItemKind: Kind } = monaco.languages;
+  const spot = cypherSpot(bodyBefore);
+  // a colon, dot or angle bracket typed outside a place that takes a name has nothing to offer
+  if (triggerCharacter && spot.kind === "general") return [];
+  const graph = (ctx && graphCatalogOf(ctx)?.graphs.find((g) => g.name === graphName)) || null;
+  let properties: string[] = [];
+  if (spot.kind === "property" && ctx && spot.label && graph) {
+    const label = spot.label;
+    properties = await cachedProperties(`${ctx.sessionId}/${ctx.database}/${graphName}/${spot.edge ? "e" : "v"}/${label}`, () =>
+      graphApi.graphLabelProperties(ctx.sessionId, ctx.database, graphName, label),
+    );
+  }
+  const kinds = {
+    keyword: Kind.Keyword,
+    function: Kind.Function,
+    vertexLabel: Kind.Class,
+    edgeLabel: Kind.Interface,
+    property: Kind.Field,
+  };
+  return cypherCandidates(spot, graph, properties).map((c) => ({
+    label: c.label,
+    kind: kinds[c.kind],
+    insertText: c.insertText,
+    detail: c.detail,
+    sortText: c.sortText,
+    range,
+  }));
+}
+
 const unquote = (name: string) => (name.startsWith('"') ? name.slice(1, -1).replace(/""/g, '"') : name.toLowerCase());
 
 /** Tables named after FROM / JOIN / UPDATE / INTO, with their aliases. */
@@ -77,6 +129,14 @@ function referencedTables(text: string): { schema: string | null; table: string;
   return out;
 }
 
+/** A table named as written in a statement (maybe schema-qualified), found in what the explorer listed. */
+function tableOf(ctx: SqlContext, written: string): { schema: string; table: string } | null {
+  const parts = written.split(".").map((p) => unquote(p));
+  const table = parts[parts.length - 1];
+  const schema = findSchema(ctx, table, parts.length > 1 ? parts[0] : null);
+  return schema ? { schema, table } : null;
+}
+
 function findSchema(ctx: SqlContext, table: string, schema: string | null): string | null {
   if (schema) return schema;
   const all = objectsOf(ctx);
@@ -86,10 +146,10 @@ function findSchema(ctx: SqlContext, table: string, schema: string | null): stri
 
 export function registerSqlCompletion(monaco: typeof Monaco) {
   const { CompletionItemKind: Kind } = monaco.languages;
-  for (const language of ["pgsql", "sql"]) {
+  for (const language of ["pgsql", "sql", SQL_LANGUAGE]) {
     monaco.languages.registerCompletionItemProvider(language, {
-      triggerCharacters: ["."],
-      async provideCompletionItems(model, position) {
+      triggerCharacters: [".", ":", "<"],
+      async provideCompletionItems(model, position, completion) {
         const ctx = contexts.get(model.uri.toString())?.() ?? null;
         const word = model.getWordUntilPosition(position);
         const range = {
@@ -105,7 +165,51 @@ export function registerSqlCompletion(monaco: typeof Monaco) {
           endLineNumber: position.lineNumber,
           endColumn: word.startColumn,
         });
+        const offset = model.getOffsetAt(position);
+        const cypher = cypherBodyAt(text, offset);
+        if (cypher) {
+          const bodyBefore = text.slice(cypher.start, offset);
+          return { suggestions: await cypherSuggestions(monaco, ctx, cypher.graph, bodyBefore, completion.triggerCharacter, range) };
+        }
+
         const suggestions: Monaco.languages.CompletionItem[] = [];
+        const catalog = ctx ? graphCatalogOf(ctx) : null;
+
+        // pgvector: distance operators after `<`, operator classes after CREATE INDEX ... USING hnsw (col
+        const operator = /<[-=#+~%]?$/.exec(before);
+        if (operator && catalog?.vector) {
+          const opRange = { ...range, startColumn: range.endColumn - operator[0].length };
+          return {
+            suggestions: VECTOR_OPERATORS.map((o) => ({
+              label: { label: o.op, description: o.name },
+              kind: Kind.Operator,
+              insertText: o.op,
+              filterText: o.op,
+              detail: o.name,
+              documentation: o.detail,
+              range: opRange,
+              sortText: `0${o.op}`,
+            })),
+          };
+        }
+        const index = indexContextAt(text.slice(Math.max(0, offset - 1000), offset));
+        if (index && ctx) {
+          const owner = index.table ? tableOf(ctx, index.table) : null;
+          const column = owner ? (await columnsOf(ctx, owner.schema, owner.table)).find((c) => c.name === unquote(index.column)) : null;
+          return {
+            suggestions: opclassesFor(index.method, column?.typeName ?? null).map((o, i) => ({
+              label: o.name,
+              kind: Kind.TypeParameter,
+              insertText: o.name,
+              detail: o.detail,
+              range,
+              sortText: String(i).padStart(2, "0"),
+            })),
+          };
+        }
+        // a colon or angle bracket typed in plain SQL (a cast, a comparison): nothing to offer
+        if (completion.triggerCharacter === ":" || completion.triggerCharacter === "<") return { suggestions: [] };
+
         const dotted = before.match(/("[^"]+"|[a-zA-Z_][\w$]*)\s*\.\s*$/);
 
         if (dotted && ctx) {
@@ -166,6 +270,11 @@ export function registerSqlCompletion(monaco: typeof Monaco) {
           }
         }
         for (const k of KEYWORDS) suggestions.push({ label: k, kind: Kind.Keyword, insertText: k, range, sortText: `5${k}` });
+        if (catalog?.vector) {
+          for (const f of VECTOR_FUNCTIONS) {
+            suggestions.push({ label: f.name, kind: Kind.Function, insertText: `${f.name}(`, range, detail: f.detail, sortText: `6${f.name}` });
+          }
+        }
         for (const f of FUNCTIONS) suggestions.push({ label: f, kind: Kind.Function, insertText: `${f}(`, range, sortText: `6${f}` });
         return { suggestions };
       },

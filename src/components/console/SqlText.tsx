@@ -1,5 +1,6 @@
 import { Fragment, useMemo } from "react";
 import { cn } from "@/lib/utils";
+import { tokenizeCypher } from "@/lib/cypher";
 
 const KEYWORDS = new Set(
   (
@@ -10,7 +11,7 @@ const KEYWORDS = new Set(
     "returns language replace alter drop add column type enum schema sequence grant revoke on to cascade restrict " +
     "nulls first last union all except intersect lateral over partition window filter within like ilike between " +
     "do if loop return declare perform raise notice explain analyze verbose buffers format json truncate vacuum " +
-    "comment generated always identity stored owned cycle increment minvalue maxvalue start cache temporary temp"
+    "comment generated always identity stored owned cycle increment minvalue maxvalue start cache temporary temp graph_table match"
   ).split(" "),
 );
 
@@ -24,21 +25,33 @@ const TYPES = new Set(
 
 type Token = { text: string; cls: string | null };
 
+/** What comes right before the quote of a `cypher('graph', $$ ... $$)` body. */
+const CYPHER_CALL = /\bcypher\s*\(\s*(?:'(?:[^']|'')*'|"[^"]*")\s*,\s*$/i;
+const STRING = "text-json-string";
+
 /** A small SQL tokenizer for read-only display: comments, strings, numbers, keywords. */
 export function tokenizeSql(text: string): Token[] {
-  const re = /(--[^\n]*)|(\/\*[\s\S]*?\*\/)|('(?:[^']|'')*')|("(?:[^"]|"")*")|(\$[a-zA-Z_]*\$[\s\S]*?\$[a-zA-Z_]*\$)|(\b\d+(?:\.\d+)?\b)|([a-zA-Z_][a-zA-Z0-9_]*)(\s*\()?/g;
+  const re = /(--[^\n]*)|(\/\*[\s\S]*?\*\/)|('(?:[^']|'')*')|("(?:[^"]|"")*")|(\$[a-zA-Z_]*\$[\s\S]*?\$[a-zA-Z_]*\$)|(\b\d+(?:\.\d+)?\b)|(\bproperty\s+graph\b)|([a-zA-Z_][a-zA-Z0-9_]*)(\s*\()?/gi;
   const out: Token[] = [];
   let last = 0;
   for (let m = re.exec(text); m; m = re.exec(text)) {
     if (m.index > last) out.push({ text: text.slice(last, m.index), cls: null });
-    const [whole, line, block, str, quoted, dollar, num, word, paren] = m;
+    const [whole, line, block, str, quoted, dollar, num, propertyGraph, word, paren] = m;
     if (line || block) out.push({ text: whole, cls: "text-code-comment italic" });
-    else if (str || dollar) out.push({ text: whole, cls: "text-json-string" });
+    else if (dollar && CYPHER_CALL.test(text.slice(Math.max(0, m.index - 300), m.index))) {
+      // the body of a cypher() call is Cypher, between its quotes
+      const open = /^\$[a-zA-Z_]*\$/.exec(whole)![0];
+      const close = /\$[a-zA-Z_]*\$$/.exec(whole.slice(open.length))?.[0] ?? "";
+      out.push({ text: open, cls: STRING }, ...tokenizeCypher(whole.slice(open.length, whole.length - close.length)));
+      if (close) out.push({ text: close, cls: STRING });
+    } else if (str || dollar) out.push({ text: whole, cls: STRING });
     else if (quoted) out.push({ text: whole, cls: "text-fg" });
     else if (num) out.push({ text: whole, cls: "text-json-number" });
+    else if (propertyGraph) out.push({ text: whole, cls: "text-json-keyword" });
     else if (word) {
       const lower = word.toLowerCase();
-      const cls = KEYWORDS.has(lower) ? "text-json-keyword" : TYPES.has(lower) ? "text-json-bson" : paren ? "text-json-bson" : null;
+      // SQL/PGQ's COLUMNS (...) is a keyword; as a bare name it is not
+      const cls = KEYWORDS.has(lower) || (lower === "columns" && paren) ? "text-json-keyword" : TYPES.has(lower) ? "text-json-bson" : paren ? "text-json-bson" : null;
       out.push({ text: word, cls });
       if (paren) out.push({ text: paren, cls: null });
     }

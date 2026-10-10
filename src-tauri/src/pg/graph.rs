@@ -119,34 +119,33 @@ pub async fn graph_catalog(client: &PgClient) -> AppResult<GraphCatalog> {
 
 /// The property names the rows of a label carry, from a sample of them, for
 /// completion: AGE keeps properties in one agtype value per row and has no
-/// catalog of their names. Reading them needs the library loaded in this
-/// connection, which is allowed only to a superuser or where the server
-/// provides it as a plugin; an error here just means no suggestions.
+/// catalog of their names. The label's table is read directly, so neither
+/// `LOAD 'age'` nor AGE's search path is needed in the connection.
 pub async fn label_properties(
     client: &PgClient,
     graph: &str,
     label: &str,
-    edge: bool,
 ) -> AppResult<Vec<String>> {
-    client.client.batch_execute("LOAD 'age'").await?;
-    let quoted = format!("`{}`", label.replace('`', "``"));
-    let pattern = if edge {
-        format!("()-[n:{quoted}]->()")
-    } else {
-        format!("(n:{quoted})")
+    let table: Option<String> = json_query(
+        client,
+        &format!(
+            "SELECT to_json(l.relation::text)
+             FROM ag_catalog.ag_label l JOIN ag_catalog.ag_graph g ON g.graphid = l.graph
+             WHERE g.name = {} AND l.name = {}",
+            super::literal(graph),
+            super::literal(label)
+        ),
+    )
+    .await?;
+    let Some(table) = table else {
+        return Ok(Vec::new());
     };
-    // a tag the label can't contain, so it can't end the body early
-    let mut tag = String::from("$cy$");
-    while label.contains(&tag) {
-        tag.insert(3, 'y');
-    }
+    // `relation::text` is the name as the server would print it in SQL
     let sql = format!(
-        // agtype to text drops the quotes of a string
-        "SELECT coalesce(json_agg(DISTINCT k ORDER BY k), '[]')
-         FROM (SELECT v::text AS k
-               FROM ag_catalog.cypher({graph}, {tag} MATCH {pattern} WITH n LIMIT 200 UNWIND keys(n) AS k RETURN k {tag})
-                    AS (v ag_catalog.agtype)) names",
-        graph = super::literal(graph),
+        "SELECT coalesce(json_agg(k ORDER BY k), '[]')
+         FROM (SELECT DISTINCT k
+               FROM (SELECT properties FROM {table} LIMIT 200) t,
+                    LATERAL json_object_keys(t.properties::json) k) names"
     );
     Ok(json_query(client, &sql).await?.unwrap_or_default())
 }
@@ -297,18 +296,22 @@ mod live_tests {
         );
         assert!(age_installed(&c).await.unwrap());
         assert_eq!(
-            label_properties(&c, "studio_test", "Person", false)
+            label_properties(&c, "studio_test", "Person").await.unwrap(),
+            ["age", "name"]
+        );
+        assert_eq!(
+            label_properties(&c, "studio_test", "KNOWS").await.unwrap(),
+            ["since"]
+        );
+        // from a connection that has loaded nothing and has no AGE search path
+        let plain = s.client(&db).await.unwrap();
+        assert_eq!(
+            label_properties(&plain, "studio_test", "Person")
                 .await
                 .unwrap(),
             ["age", "name"]
         );
-        assert_eq!(
-            label_properties(&c, "studio_test", "KNOWS", true)
-                .await
-                .unwrap(),
-            ["since"]
-        );
-        assert!(label_properties(&c, "studio_test", "Nope", false)
+        assert!(label_properties(&c, "studio_test", "Nope")
             .await
             .unwrap()
             .is_empty());

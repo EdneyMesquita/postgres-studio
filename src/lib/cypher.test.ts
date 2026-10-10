@@ -14,9 +14,9 @@ import {
 describe("templates", () => {
   it("opens a query on a graph with the session setup first", () => {
     expect(graphScript("social")).toBe(
-      `LOAD 'age';\nSET search_path = ag_catalog, "$user", public;\n\nSELECT * FROM cypher('social', $$ MATCH (n) RETURN n LIMIT 25 $$) AS (n agtype);\n`,
+      `-- Run the whole script once (Ctrl+Shift+Enter): LOAD and SET apply to this console's session,\n-- then Ctrl+Enter runs the query alone.\nLOAD 'age';\nSET search_path = ag_catalog, "$user", public;\n\nSELECT * FROM cypher('social', $$ MATCH (n) RETURN n LIMIT 25 $$) AS (n agtype);\n`,
     );
-    expect(graphScript("social").startsWith(AGE_SETUP)).toBe(true);
+    expect(graphScript("social")).toContain(`${AGE_SETUP}\n\nSELECT`);
   });
 
   it("quotes the graph name as a literal, whatever it holds", () => {

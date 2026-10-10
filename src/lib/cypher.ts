@@ -38,6 +38,9 @@ export function sqlString(value: string): string {
 /** What each session needs before cypher() works. */
 export const AGE_SETUP = `LOAD 'age';\nSET search_path = ag_catalog, "$user", public;`;
 
+/** Ctrl+Enter runs one statement, so the two above wait for a run of the whole script. */
+const SETUP_NOTE = "-- Run the whole script once (Ctrl+Shift+Enter): LOAD and SET apply to this console's session,\n-- then Ctrl+Enter runs the query alone.";
+
 /** `$$`, or a tagged quote when the body itself holds `$$`. */
 function quoteTag(body: string): string {
   let tag = "$$";
@@ -53,7 +56,7 @@ export function cypherQuery(graph: string, body: string, columns: string[]): str
 
 /** A console's text for a new query on a graph. */
 export function graphScript(graph: string): string {
-  return `${AGE_SETUP}\n\n${cypherQuery(graph, "MATCH (n) RETURN n LIMIT 25", ["n"])}\n`;
+  return `${SETUP_NOTE}\n${AGE_SETUP}\n\n${cypherQuery(graph, "MATCH (n) RETURN n LIMIT 25", ["n"])}\n`;
 }
 
 /** A console's text for the nodes of a vertex label, or the edges of an edge label. */
@@ -63,7 +66,7 @@ export function labelScript(graph: string, label: string, kind: "v" | "e"): stri
     kind === "v"
       ? cypherQuery(graph, `MATCH (n:${name}) RETURN n LIMIT 25`, ["n"])
       : cypherQuery(graph, `MATCH (a)-[e:${name}]->(b) RETURN a, e, b LIMIT 25`, ["a", "e", "b"]);
-  return `${AGE_SETUP}\n\n${query}\n`;
+  return `${SETUP_NOTE}\n${AGE_SETUP}\n\n${query}\n`;
 }
 
 /** A console's text for a SQL/PGQ property graph, whose columns only its author knows. */

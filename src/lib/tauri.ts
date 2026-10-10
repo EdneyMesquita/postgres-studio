@@ -212,6 +212,6 @@ export const graphApi = {
     invoke<GraphCatalog>("graph_catalog", { sessionId, database }),
 
   /** The property names a graph label's rows carry (a sample), for completion. */
-  graphLabelProperties: (sessionId: string, database: string, graph: string, label: string, edge: boolean) =>
-    invoke<string[]>("graph_label_properties", { sessionId, database, graph, label, edge }),
+  graphLabelProperties: (sessionId: string, database: string, graph: string, label: string) =>
+    invoke<string[]>("graph_label_properties", { sessionId, database, graph, label }),
 };
