@@ -68,6 +68,19 @@ export POSTGRES_STUDIO_TEST_URI="postgres://postgres:postgres@localhost:5433/sho
 cargo test --lib -- --ignored
 ```
 
+## Benchmarks
+
+`scripts/bench.mjs` times the backend's commands through the dev bridge (the same commands and JSON as the app's IPC), so an optimization can be measured before and after. It needs a `bench` database with a large table on the dev server:
+
+```sh
+docker exec postgres-studio-dev psql -U postgres -c "create database bench"
+docker exec postgres-studio-dev psql -U postgres -d bench -c "create table big as select g as id, md5(g::text) as hash, (random()*1e6)::int as qty, now() - (g || ' seconds')::interval as created_at, jsonb_build_object('k', g) as meta, (g % 7 = 0) as flag, repeat('x', 40) as filler, gen_random_uuid() as uid, (random()*1000)::numeric(12,2) as price, null::text as empty from generate_series(1, 1000000) g; alter table big add primary key (id); analyze big;"
+(cd src-tauri && cargo build --release --features devbridge --bin devbridge) && src-tauri/target/release/devbridge &
+node scripts/bench.mjs <connection id> --runs 5
+```
+
+Startup is marked in the page as `performance.mark("app-mounted")` (the first React commit), next to the navigation timings.
+
 ## Building
 
 ```sh
