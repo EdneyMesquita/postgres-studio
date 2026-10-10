@@ -314,7 +314,7 @@ fn produce_rewritten(
         if record.len() != columns {
             let line = record.position().map_or(0, |p| p.line());
             return Err(AppError::InvalidInput(format!(
-                "Line {line} has {} fields, but the first row has {columns}.",
+                "Line {line} has {} fields, but the file has {columns} columns.",
                 record.len()
             )));
         }
