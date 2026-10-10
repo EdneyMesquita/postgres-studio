@@ -70,7 +70,10 @@ export function ConsoleToolbar({ tab, dirty, running, onRun, onRunAll, onExplain
   return (
     <div className="@container flex h-9 shrink-0 items-center gap-2 border-b border-line px-2.5">
       <ConsoleTargetPill tab={tab} />
-      <ScriptFileChip file={file} dirty={dirty} onDetach={() => detach(key)} />
+      {/* The pane header and the tab name the file too; a narrow bar keeps Run. */}
+      <span className="contents @max-[520px]:hidden">
+        <ScriptFileChip file={file} dirty={dirty} onDetach={() => detach(key)} />
+      </span>
       {tab.kind === "console" && tab.fromAssistant && <FromAssistantTag />}
       {saveError && (
         <span className="shrink-0 text-sm text-danger" title={saveError} role="alert">

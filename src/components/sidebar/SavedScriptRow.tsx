@@ -24,8 +24,9 @@ export function SavedScriptRow({ script, current, onOpen }: SavedScriptRowProps)
       onClick={onOpen}
     >
       <FileCode className="size-3.5 shrink-0 text-fg-2" aria-hidden />
-      <span className="min-w-0 truncate font-data">{script.name}</span>
-      <span className="ml-auto min-w-0 shrink truncate pl-2 text-xs text-fg-3">
+      {/* The name first: the folder gets what width is left, if any. */}
+      <span className="max-w-full flex-none truncate font-data">{script.name}</span>
+      <span className="ml-auto min-w-0 flex-1 truncate pl-2 text-right text-xs text-fg-3">
         {scriptFolder(script.path)}
       </span>
     </button>

@@ -96,3 +96,31 @@ export function normalizeBool(input: string): string | null {
   if (["f", "false", "no", "n", "off", "0"].includes(v)) return "f";
   return null;
 }
+
+/**
+ * A cell's text as the JSON value it stands for, for "Copy row as JSON":
+ * integers and floats as numbers (unless JavaScript would round them),
+ * booleans, json and jsonb as their own structure, NULL as null. numeric,
+ * money and everything else stay text, so nothing loses precision.
+ */
+export function jsonValue(column: Pick<ResultColumn, "typeOid" | "typeName">, value: string | null): unknown {
+  if (value === null) return null;
+  const type = column.typeName;
+  if (/^(smallint|integer|bigint|int[248]|oid)$/.test(type)) {
+    const n = Number(value);
+    return Number.isSafeInteger(n) ? n : value;
+  }
+  if (/^(real|double precision|float[48])$/.test(type)) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : value;
+  }
+  if (type === "boolean" || type === "bool") return value === "t" ? true : value === "f" ? false : value;
+  if (type === "json" || type === "jsonb") {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return value;
+    }
+  }
+  return value;
+}

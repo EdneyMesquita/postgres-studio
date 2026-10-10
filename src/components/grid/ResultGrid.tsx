@@ -1,10 +1,11 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, MouseEvent } from "react";
 import { ArrowUpRight, KeyRound, Link2 } from "lucide-react";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { RowContextMenu } from "@/components/common/ActionMenu";
 import type { MenuEntry } from "@/components/common/ActionMenu";
-import { alignsRight, cellParts, cellText, displayValue, kindClass, normalizeBool, valueKind } from "../../lib/pgValue";
+import { alignsRight, cellParts, cellText, displayValue, jsonValue, kindClass, normalizeBool, valueKind } from "../../lib/pgValue";
 import type { ValueKind } from "../../lib/pgValue";
 import type { ColumnInfo, ResultColumn, Row } from "../../types/pg";
 import type { NewRow } from "../../store/sessionsStore";
@@ -58,9 +59,12 @@ interface CellRef {
   isNew: boolean;
 }
 
-/** Copies text, reporting failure quietly. */
-function copy(text: string) {
-  void navigator.clipboard.writeText(text).catch(() => {});
+/** Copies text; says so when asked, and when it fails. */
+function copy(text: string, done?: string) {
+  navigator.clipboard.writeText(text).then(
+    () => done && toast.success(done),
+    (e) => toast.error("Couldn't copy", { description: String(e) }),
+  );
 }
 
 /**
@@ -156,8 +160,10 @@ export function ResultGrid({
       label: "Copy row as JSON",
       onSelect: () => {
         const source = cell.isNew ? null : rows[cell.row];
-        const object = Object.fromEntries(columns.map((c, i) => [c.name, source ? source[i] : (inserted[cell.row]?.[c.name] ?? null)]));
-        copy(JSON.stringify(object, null, 2));
+        const object = Object.fromEntries(
+          columns.map((c, i) => [c.name, jsonValue(c, source ? source[i] : (inserted[cell.row]?.[c.name] ?? null))]),
+        );
+        copy(JSON.stringify(object, null, 2), "Copied the row as JSON");
       },
     });
     if (editing) {
