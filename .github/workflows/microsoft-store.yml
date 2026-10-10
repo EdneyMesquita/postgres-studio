@@ -141,14 +141,14 @@ jobs:
     steps:
       # The release's source. Empty repo and tag (pull requests) mean the
       # event's own commit.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: ${{ needs.resolve.outputs.repo }}
           ref: ${{ needs.resolve.outputs.tag }}
 
       # The packaging files come from this workflow's commit, so a release
       # tagged before they changed still packs with the current ones.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           path: .msstore
           sparse-checkout: src-tauri/msix
@@ -173,9 +173,9 @@ jobs:
           workspaces: src-tauri
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install frontend dependencies
@@ -196,7 +196,7 @@ jobs:
             -DisplayName $env:DISPLAY_NAME
 
       - name: Upload the package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ${{ env.PLACEHOLDER == 'true' && 'msix-placeholder-identity-not-for-upload' || 'msix-microsoft-store' }}
           path: ${{ steps.pack.outputs.package }}
