@@ -228,6 +228,26 @@ pub struct IndexInfo {
     pub columns: Vec<String>,
     /// The constraint the index backs, if any.
     pub constraint: Option<String>,
+    /// `false` after a failed `CREATE INDEX CONCURRENTLY`: the planner
+    /// ignores it and it only costs writes.
+    #[serde(default = "yes")]
+    pub valid: bool,
+    /// A `WHERE` clause limits the rows it covers.
+    #[serde(default)]
+    pub partial: bool,
+    /// The `WHERE` clause, for a partial index.
+    #[serde(default)]
+    pub predicate: Option<String>,
+    /// Some key is an expression, not a column.
+    #[serde(default)]
+    pub expression: bool,
+    /// Columns carried by `INCLUDE`, beyond the keys.
+    #[serde(default)]
+    pub include: Vec<String>,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -236,6 +256,22 @@ pub struct TriggerInfo {
     pub name: String,
     pub definition: String,
     pub enabled: bool,
+    /// `pg_trigger.tgenabled`: `O` on, `D` off, `R` on for replicas only,
+    /// `A` always.
+    #[serde(default)]
+    pub enabled_state: String,
+    /// `BEFORE`, `AFTER` or `INSTEAD OF`.
+    #[serde(default)]
+    pub timing: String,
+    /// `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`.
+    #[serde(default)]
+    pub events: Vec<String>,
+    /// `row` or `statement`.
+    #[serde(default)]
+    pub level: String,
+    /// The function it runs, e.g. `audit.log_change()`.
+    #[serde(default)]
+    pub function: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -425,7 +461,13 @@ pub async fn describe_table(client: &PgClient, schema: &str, table: &str) -> App
                     'columns', (SELECT json_agg(pg_get_indexdef(i.indexrelid, k, true) ORDER BY k)
                                 FROM generate_series(1, i.indnkeyatts) k),
                     'constraint', (SELECT pc.conname FROM pg_constraint pc
-                                   WHERE pc.conindid = i.indexrelid AND pc.conrelid = t.oid LIMIT 1)
+                                   WHERE pc.conindid = i.indexrelid AND pc.conrelid = t.oid LIMIT 1),
+                    'valid', i.indisvalid,
+                    'partial', i.indpred IS NOT NULL,
+                    'predicate', pg_get_expr(i.indpred, i.indrelid, true),
+                    'expression', i.indexprs IS NOT NULL,
+                    'include', (SELECT coalesce(json_agg(pg_get_indexdef(i.indexrelid, k, true) ORDER BY k), '[]')
+                                FROM generate_series(i.indnkeyatts + 1, i.indnatts) k)
                 ) ORDER BY i.indisprimary DESC, ic.relname), '[]')
                 FROM pg_index i
                 JOIN pg_class ic ON ic.oid = i.indexrelid
@@ -434,7 +476,16 @@ pub async fn describe_table(client: &PgClient, schema: &str, table: &str) -> App
                 WHERE i.indrelid = t.oid),
             'triggers', (SELECT coalesce(json_agg(json_build_object(
                     'name', tg.tgname, 'definition', pg_get_triggerdef(tg.oid, true),
-                    'enabled', tg.tgenabled <> 'D') ORDER BY tg.tgname), '[]')
+                    'enabled', tg.tgenabled <> 'D', 'enabledState', tg.tgenabled::text,
+                    'timing', CASE WHEN tg.tgtype & 64 <> 0 THEN 'INSTEAD OF'
+                                   WHEN tg.tgtype & 2 <> 0 THEN 'BEFORE' ELSE 'AFTER' END,
+                    'events', array_to_json(array_remove(ARRAY[
+                        CASE WHEN tg.tgtype & 4 <> 0 THEN 'INSERT' END,
+                        CASE WHEN tg.tgtype & 8 <> 0 THEN 'DELETE' END,
+                        CASE WHEN tg.tgtype & 16 <> 0 THEN 'UPDATE' END,
+                        CASE WHEN tg.tgtype & 32 <> 0 THEN 'TRUNCATE' END], NULL)),
+                    'level', CASE WHEN tg.tgtype & 1 <> 0 THEN 'row' ELSE 'statement' END,
+                    'function', tg.tgfoid::regprocedure::text) ORDER BY tg.tgname), '[]')
                 FROM pg_trigger tg WHERE tg.tgrelid = t.oid AND NOT tg.tgisinternal),
             'viewDefinition', CASE WHEN t.relkind IN ('v', 'm') THEN pg_get_viewdef(t.oid, true) END,
             'stats', (SELECT json_build_object(

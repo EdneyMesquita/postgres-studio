@@ -9,6 +9,7 @@
 pub mod catalog;
 pub mod connect;
 pub mod edit;
+pub mod objects;
 pub mod run;
 pub mod split;
 mod tls;
@@ -156,7 +157,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod live_tests {
+pub(crate) mod live_tests {
     //! Against the dev server (docker-compose.dev.yml). Run with:
     //!   POSTGRES_STUDIO_TEST_URI=postgres://postgres:postgres@localhost:5433/shop \
     //!     cargo test --lib -- --ignored pg::live_tests
@@ -167,7 +168,7 @@ mod live_tests {
     use crate::secrets::InMemoryStore;
     use std::sync::Arc;
 
-    async fn session() -> PgSession {
+    pub(crate) async fn session() -> PgSession {
         let uri = std::env::var("POSTGRES_STUDIO_TEST_URI").expect("set POSTGRES_STUDIO_TEST_URI");
         let profile = ConnectionProfile {
             id: "live".into(),

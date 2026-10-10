@@ -1,10 +1,14 @@
-import { Copy, KeyRound, Link2, SquareTerminal, Workflow } from "lucide-react";
+import { Copy, KeyRound, Link2, Plus, SquareTerminal, Workflow } from "lucide-react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { useConnectionsStore } from "../../store/connectionsStore";
 import { useConsoleStore } from "../../store/consoleStore";
 import { useSessionsStore } from "../../store/sessionsStore";
 import type { TableTab } from "../../store/sessionsStore";
 import { formatBytes, formatInt } from "@/lib/format";
+import { IndexesTable } from "../objects/IndexesTable";
+import { NewIndexDialog } from "../objects/NewIndexDialog";
+import { TriggersTable } from "../objects/TriggersSection";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { SqlText } from "../console/SqlText";
@@ -39,6 +43,7 @@ const td = "h-[30px] border-b border-line-soft px-3.5 align-middle";
 /** Columns, constraints, indexes and triggers, with the DDL beside them. */
 export function StructureView({ tab }: { tab: TableTab }) {
   const session = useConnectionsStore((s) => s.sessions[tab.connection.id]);
+  const [newIndexOpen, setNewIndexOpen] = useState(false);
   const info = tab.info;
 
   if (!info) {
@@ -49,7 +54,6 @@ export function StructureView({ tab }: { tab: TableTab }) {
     );
   }
 
-  const maxScans = Math.max(1, ...info.indexes.map((i) => i.scans ?? 0));
   const fkOf = (column: string) => info.constraints.find((c) => c.kind === "f" && c.columns?.length === 1 && c.columns[0] === column);
   const isView = info.kind === "v" || info.kind === "m";
 
@@ -201,64 +205,33 @@ export function StructureView({ tab }: { tab: TableTab }) {
           </Section>
         )}
 
-        <Section title="Indexes" count={info.indexes.length} action={<span className="font-normal text-fg-3">scans since the statistics were reset</span>}>
-          {info.indexes.length === 0 ? (
-            <p className="px-3.5 py-2 text-sm text-fg-3">None</p>
-          ) : (
-            <table className="w-full border-collapse">
-              <thead>
-                <tr>
-                  <th className={th}>Name</th>
-                  <th className={th}>Method</th>
-                  <th className={th}>Columns</th>
-                  <th className={cn(th, "text-right")}>Size</th>
-                  <th className={th}>Scans</th>
-                </tr>
-              </thead>
-              <tbody>
-                {info.indexes.map((i) => (
-                  <tr key={i.name} className="hover:bg-row-hover" title={i.definition}>
-                    <td className={cn(td, "font-data whitespace-nowrap")}>
-                      {i.name}
-                      {i.primary ? (
-                        <span className="ml-2 font-sans text-xs text-json-keyword">primary</span>
-                      ) : i.unique ? (
-                        <span className="ml-2 font-sans text-xs text-fg-3">unique</span>
-                      ) : null}
-                    </td>
-                    <td className={cn(td, "font-data text-fg-2")}>{i.method}</td>
-                    <td className={td}>
-                      {i.columns.map((c) => (
-                        <span key={c} className="mr-1 rounded-sm bg-fg/7 px-1.5 py-0.5 font-mono text-sm">
-                          {c}
-                        </span>
-                      ))}
-                    </td>
-                    <td className={cn(td, "text-right tabular-nums")}>{i.sizeBytes !== null ? formatBytes(i.sizeBytes) : ""}</td>
-                    <td className={cn(td, "tabular-nums whitespace-nowrap")}>
-                      <span className="mr-2 inline-block h-1 w-16 overflow-hidden rounded-sm bg-line align-middle">
-                        <i className="block h-full bg-accent" style={{ width: `${((i.scans ?? 0) / maxScans) * 100}%` }} />
-                      </span>
-                      {formatInt(i.scans ?? 0)}
-                      {(i.scans ?? 0) === 0 && !i.primary && <span className="ml-2 text-xs text-warn">unused</span>}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </Section>
+        {info.kind !== "v" && (
+          <Section
+            title="Indexes"
+            count={info.indexes.length}
+            action={
+              <>
+                <span className="font-normal text-fg-3">scans since the statistics were reset</span>
+                {info.kind !== "f" && (
+                  <Button variant="ghost" size="sm" title="Build a CREATE INDEX for this table in a console" onClick={() => setNewIndexOpen(true)}>
+                    <Plus />
+                    New index…
+                  </Button>
+                )}
+              </>
+            }
+          >
+            {info.indexes.length === 0 ? <p className="px-3.5 py-2 text-sm text-fg-3">None</p> : <IndexesTable tab={tab} indexes={info.indexes} />}
+          </Section>
+        )}
 
         {info.triggers.length > 0 && (
           <Section title="Triggers" count={info.triggers.length}>
-            {info.triggers.map((t) => (
-              <div key={t.name} className="border-b border-line-soft px-3.5 py-1.5">
-                <SqlText text={t.definition} className={t.enabled ? undefined : "opacity-60"} />
-              </div>
-            ))}
+            <TriggersTable tab={tab} triggers={info.triggers} canToggle={!isView} />
           </Section>
         )}
       </div>
+      {newIndexOpen && <NewIndexDialog tab={tab} columns={info.columns} onClose={() => setNewIndexOpen(false)} />}
       <aside className="flex w-[380px] shrink-0 flex-col border-l border-line max-lg:hidden">
         <div className="flex h-9 flex-none items-center gap-1.5 border-b border-line-soft pr-1.5 pl-3">
           <span className="font-semibold">DDL</span>
