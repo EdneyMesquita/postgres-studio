@@ -1,6 +1,7 @@
 import { Database } from "lucide-react";
 import { useConnectionsStore } from "../../store/connectionsStore";
 import { databaseKey, schemaKey, useExplorerStore } from "../../store/explorerStore";
+import { useDumpStore } from "../../store/dumpStore";
 import { useSessionsStore } from "../../store/sessionsStore";
 import type { TabConnection } from "../../store/sessionsStore";
 import type { DatabaseInfo } from "../../types/pg";
@@ -50,6 +51,8 @@ export function DatabaseRow({ db, sessionId, connection, depth, query }: Databas
             database: db.name,
             connectionName: connection.name,
             onOpenConsole: () => openConsole(connection, db.name),
+            onBackup: () => useDumpStore.getState().open("backup", connection, db.name),
+            onRestore: () => useDumpStore.getState().open("restore", connection, db.name),
             onRefresh: () => {
               void refresh(connection.id, sessionId, db.name);
               void useConnectionsStore.getState().refreshDatabases(connection.id);

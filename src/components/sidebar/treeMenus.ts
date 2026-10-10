@@ -1,4 +1,4 @@
-import { Copy, FileCode, FolderPlus, ListTree, Pencil, Plug, RefreshCw, SquareTerminal, Table, Trash2, Unplug, Workflow } from "lucide-react";
+import { Copy, DatabaseBackup, DatabaseZap, FileCode, FolderPlus, ListTree, Pencil, Plug, RefreshCw, SquareTerminal, Table, Trash2, Unplug, Workflow } from "lucide-react";
 import { toast } from "sonner";
 import type { MenuEntry } from "@/components/common/ActionMenu";
 
@@ -69,6 +69,8 @@ interface DatabaseMenu {
   connectionName: string;
   onOpenConsole: () => void;
   onRefresh: () => void;
+  onBackup: () => void;
+  onRestore: () => void;
 }
 
 export function databaseMenuEntries(m: DatabaseMenu): MenuEntry[] {
@@ -76,6 +78,10 @@ export function databaseMenuEntries(m: DatabaseMenu): MenuEntry[] {
     { heading: `${m.database} on ${m.connectionName}` },
     { label: `Open SQL console on ${m.database}`, icon: SquareTerminal, onSelect: m.onOpenConsole },
     { label: "Refresh", icon: RefreshCw, onSelect: m.onRefresh },
+    { separator: true },
+    { label: "Back up with pg_dump...", icon: DatabaseBackup, onSelect: m.onBackup },
+    { label: "Restore from a backup...", icon: DatabaseZap, onSelect: m.onRestore },
+    { separator: true },
     { label: "Copy name", icon: Copy, onSelect: () => copyName(m.database) },
   ];
 }

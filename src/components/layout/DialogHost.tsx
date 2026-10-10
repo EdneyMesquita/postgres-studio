@@ -1,4 +1,5 @@
 import { lazy, Suspense } from "react";
+import { useDumpStore } from "../../store/dumpStore";
 import { useUiStore } from "../../store/uiStore";
 import { ConfirmDialog } from "../common/ConfirmDialog";
 
@@ -11,13 +12,16 @@ const ConnectionsImportExportDialog = lazy(() =>
     default: m.ConnectionsImportExportDialog,
   })),
 );
+const BackupDialog = lazy(() => import("../dump/BackupDialog").then((m) => ({ default: m.BackupDialog })));
+const RestoreDialog = lazy(() => import("../dump/RestoreDialog").then((m) => ({ default: m.RestoreDialog })));
 const EditConnectionDialog = lazy(() =>
   import("./EditConnectionDialog").then((m) => ({ default: m.EditConnectionDialog })),
 );
 
 /**
  * App-level dialogs, opened from anywhere through uiStore: the connection
- * form (for a new connection or a saved one) and import / export; and the
+ * form (for a new connection or a saved one), import / export and backup /
+ * restore; and the
  * questions `confirm()` asks, above them.
  */
 export function DialogHost() {
@@ -25,6 +29,8 @@ export function DialogHost() {
   const setConnectionDialog = useUiStore((s) => s.setConnectionDialog);
   const importExportOpen = useUiStore((s) => s.importExportOpen);
   const setImportExportOpen = useUiStore((s) => s.setImportExportOpen);
+  const dump = useDumpStore((s) => s.dialog);
+  const closeDump = useDumpStore((s) => s.close);
   const close = () => setConnectionDialog(null);
 
   let content = null;
@@ -33,6 +39,9 @@ export function DialogHost() {
     content = <EditConnectionDialog key={dialog.id} id={dialog.id} onClose={close} />;
   } else if (importExportOpen) {
     content = <ConnectionsImportExportDialog onClose={() => setImportExportOpen(false)} />;
+  } else if (dump) {
+    const Dialog = dump.kind === "backup" ? BackupDialog : RestoreDialog;
+    content = <Dialog key={`${dump.kind}/${dump.connection.id}/${dump.database}`} dialog={dump} onClose={closeDump} />;
   }
   return (
     <>

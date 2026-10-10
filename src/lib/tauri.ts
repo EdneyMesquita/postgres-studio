@@ -14,10 +14,16 @@ import type {
   ApplyResult,
   BrowseInput,
   BrowseResult,
+  BackupFormat,
   DatabaseInfo,
+  DumpOptions,
+  DumpSummary,
   ExplainResult,
   ExportFormat,
   ExportSummary,
+  PgToolsInfo,
+  RestoreOptions,
+  RestoreSummary,
   ResultColumn,
   Row,
   RowEdit,
@@ -201,4 +207,28 @@ export const api = {
 
   /** Where the agents run, for resuming a session in a terminal. */
   assistantWorkdir: () => invoke<string>("assistant_workdir"),
+
+  /** Finds pg_dump, pg_restore and psql on this machine. */
+  pgToolsInfo: () => invoke<PgToolsInfo>("pg_tools_info"),
+
+  /** What a backup file or folder is, from its content. */
+  backupFormat: (path: string) => invoke<BackupFormat>("backup_format", { path }),
+
+  /** Backs a database up with pg_dump; progress arrives as dump-progress events. */
+  dumpDatabase: (
+    sessionId: string,
+    database: string,
+    options: DumpOptions,
+    destPath: string,
+    executionId: string,
+  ) => invoke<DumpSummary>("dump_database", { sessionId, database, options, destPath, executionId }),
+
+  /** Restores a backup with pg_restore or psql; progress arrives as restore-progress events. */
+  restoreDatabase: (
+    sessionId: string,
+    database: string,
+    sourcePath: string,
+    options: RestoreOptions,
+    executionId: string,
+  ) => invoke<RestoreSummary>("restore_database", { sessionId, database, sourcePath, options, executionId }),
 };

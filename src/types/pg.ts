@@ -258,3 +258,79 @@ export interface SchemaDiagram {
   tables: DiagramTable[];
   foreignKeys: DiagramForeignKey[];
 }
+
+export type BackupFormat = "custom" | "plain" | "directory" | "tar";
+
+/** Everything, only the schema, or only the rows. */
+export type BackupContent = "all" | "schema_only" | "data_only";
+
+export interface PgTool {
+  path: string;
+  /** As --version prints it, e.g. "17.6". */
+  version: string;
+  major: number;
+}
+
+/** Every copy of the client tools found, newest first, and where it looked. */
+export interface PgToolsInfo {
+  pgDump: PgTool[];
+  pgRestore: PgTool[];
+  psql: PgTool[];
+  searched: string[];
+}
+
+export interface TableRef {
+  schema: string;
+  name: string;
+}
+
+export interface DumpOptions {
+  format: BackupFormat;
+  content: BackupContent;
+  /** Only these, when not empty. */
+  schemas: string[];
+  tables: TableRef[];
+  /** Kept in the backup without their rows. */
+  excludeData: TableRef[];
+  noOwner: boolean;
+  noPrivileges: boolean;
+  /** Plain format: drop each object before creating it. */
+  clean: boolean;
+  /** 0-9, for the custom and directory formats. */
+  compression: number | null;
+  /** Directory format only. */
+  jobs: number | null;
+}
+
+export interface RestoreOptions {
+  content: BackupContent;
+  clean: boolean;
+  create: boolean;
+  noOwner: boolean;
+  noPrivileges: boolean;
+  singleTransaction: boolean;
+  exitOnError: boolean;
+  jobs: number | null;
+}
+
+export interface DumpSummary {
+  path: string;
+  bytes: number;
+  elapsedMs: number;
+  warnings: string[];
+}
+
+export interface RestoreSummary {
+  format: BackupFormat;
+  elapsedMs: number;
+  warnings: string[];
+  /** Statements that failed, when the restore went on past them. */
+  errors: string[];
+}
+
+export interface ToolProgressEvent {
+  executionId: string;
+  line: string;
+  /** Objects handled so far. */
+  objects: number;
+}
