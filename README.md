@@ -10,13 +10,17 @@ Website: <https://pgstudio.nilpointer.tech>
 
 - **Connections** - any number of saved connections (a `postgres://` URI or host/port), TLS (`sslmode` up to `verify-full`, custom CA, client certificate), SSH tunnels (password or key, host keys pinned on first use), read-only connections, a pooler mode for PgBouncer/Supabase in transaction mode, folders and an identity color per connection. Import from pgAdmin's `servers.json`.
 - **Secrets stored securely** - passwords and passphrases go to the OS keychain (macOS Keychain / Windows Credential Manager / Linux Secret Service), with an encrypted-file fallback on headless Linux.
-- **Explorer** - connection > database > schema > tables, views, materialized views, functions, sequences and types, with a quick open (Ctrl+K) across every schema.
-- **Table tabs** - Data (WHERE / ORDER BY / LIMIT / OFFSET, a typed virtualized grid, foreign keys you can follow, a row inspector with references both ways), Structure (columns, constraints, indexes with usage, DDL) and SQL (a console scoped to the table), all in the same tab.
+- **Explorer** - connection > database > schema > tables, views, materialized views, functions, sequences and types, plus installed extensions and Apache AGE graphs, with a quick open (Ctrl+K) across every schema.
+- **Table tabs** - Data (WHERE / ORDER BY / LIMIT / OFFSET, a typed virtualized grid, foreign keys you can follow, a row inspector with references both ways), Structure (columns, constraints, indexes with usage, triggers, view definitions, DDL; new index, enable/disable or drop a trigger) and SQL (a console scoped to the table), all in the same tab.
 - **Edits inside a transaction** - edited, added and deleted rows wait as pending changes; review the generated SQL, then Commit (Ctrl+S) or discard.
-- **SQL console** - runs the statement at the caret or the selection, one result tab per statement plus Messages, auto-commit or manual transactions, cancel, saved scripts.
+- **SQL console** - runs the statement at the caret or the selection, one result tab per statement plus Messages, auto-commit or manual transactions, cancel, saved scripts. Large results read only the rows shown.
+- **SQL files of any size** - run from disk, streamed statement by statement (`COPY ... FROM stdin` blocks included), stop or continue on errors, with progress and the failing lines.
 - **Explain** - `EXPLAIN` and `EXPLAIN (ANALYZE, BUFFERS)` (rolled back) as a tree with time per node and estimated against actual rows.
 - **Schema diagram** - a schema's tables and foreign keys, laid out automatically; trace a table's keys, open it, export the diagram as SVG.
-- **Export** - query results and whole tables to CSV or JSON.
+- **Import and export** - query results and whole tables to CSV or JSON; CSV files into a table with a column mapping.
+- **Backup and restore** - `pg_dump` (custom, directory, tar, plain) and `pg_restore` / `psql`, with the client tools already on the machine.
+- **Server activity** - sessions and locks with cancel and terminate; roles; extensions to install, update or drop; VACUUM, ANALYZE, REINDEX and generated SQL for a table.
+- **Graphs and vectors** - Cypher inside `cypher()` calls highlighted and completed for Apache AGE, vertices and edges shown readably; pgvector values shown compactly, with the distance operators and index opclasses in completion.
 - **Tab groups and split view** - tabs grouped by connection, up to four panes side by side.
 - **Assistant (opt-in)** - ask in plain words, answered by the Claude Code or Codex CLI you already have installed; the agent reads your server only through read-only tools the app serves.
 

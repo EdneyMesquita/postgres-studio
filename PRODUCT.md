@@ -42,7 +42,8 @@ Used for long stretches next to an IDE and a terminal, often on a laptop screen.
 ## Roadmap
 
 - Phase 1 (done): connections, explorer, table Data/Structure/SQL, pending edits with Commit, SQL console, Explain, schema diagram, CSV/JSON export.
-- Phase 2: dump and restore (`pg_dump` / `pg_restore`), running long scripts from a file, triggers and extensions, server activity, graph queries (Apache AGE), pgvector, then performance work.
+- Phase 2 (done, 0.1.0): dump and restore (`pg_dump` / `pg_restore`), SQL files run from disk, CSV import, triggers, extensions, server activity, roles, maintenance, graph queries (Apache AGE), pgvector, performance work.
+- Next: SQL/PGQ property graphs once a PostgreSQL release ships them (only detected today), `pg_stat_statements`, bloat.
 
 ## Brand Commitments
 
