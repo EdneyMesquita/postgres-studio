@@ -1,6 +1,7 @@
 import type { CSSProperties } from "react";
 import { TableTabView } from "../table/TableTabView";
 import { DiagramTabView } from "../diagram/DiagramTabView";
+import { ActivityTabView } from "../activity/ActivityTabView";
 import { ScriptConsole } from "../console/ScriptConsole";
 import { CollectionTabs } from "../tabs/CollectionTabs";
 import { TabDragGhost } from "../tabs/TabDragGhost";
@@ -108,6 +109,8 @@ export function EditorArea() {
                   <TableTabView tab={tab} active={isFocused} shown={visible} />
                 ) : tab.kind === "diagram" ? (
                   <DiagramTabView tab={tab} />
+                ) : tab.kind === "activity" ? (
+                  <ActivityTabView tab={tab} shown={visible} />
                 ) : (
                   <ScriptConsole tab={tab} active={isFocused} />
                 )}

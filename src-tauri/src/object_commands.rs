@@ -4,6 +4,7 @@
 
 use tauri::State;
 
+use crate::activity::{self, ActivityRow, LockRow};
 use crate::commands::on_session;
 use crate::error::{AppError, AppResult};
 use crate::logging::Op;
@@ -70,6 +71,74 @@ pub async fn extension_action(
             objects::extension_sql(&name, &action)
         );
         Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn server_activity(
+    state: State<'_, AppState>,
+    session_id: String,
+    database: String,
+) -> AppResult<Vec<ActivityRow>> {
+    let op = Op::new("activity", &database, None);
+    on_session(&state, &session_id, op, async |s| {
+        let client = s.client(&database).await?;
+        activity::list_activity(&client).await
+    })
+    .await
+}
+
+/// With `all`, every lock; otherwise those waiting or blocking.
+#[tauri::command]
+pub async fn server_locks(
+    state: State<'_, AppState>,
+    session_id: String,
+    database: String,
+    all: bool,
+) -> AppResult<Vec<LockRow>> {
+    let op = Op::new("locks", &database, None);
+    on_session(&state, &session_id, op, async |s| {
+        let client = s.client(&database).await?;
+        activity::list_locks(&client, all).await
+    })
+    .await
+}
+
+/// Cancels a backend's query, or with `terminate` ends its session. The
+/// answer is whether the server signalled it; the page asks about
+/// terminating first.
+#[tauri::command]
+pub async fn signal_backend(
+    state: State<'_, AppState>,
+    session_id: String,
+    database: String,
+    pid: i32,
+    terminate: bool,
+) -> AppResult<bool> {
+    let op = Op::new(
+        if terminate { "terminate" } else { "cancel" },
+        &database,
+        None,
+    );
+    on_session(&state, &session_id, op, async |s| {
+        let client = s.client(&database).await?;
+        let signalled = activity::signal_backend(&client, pid, terminate).await?;
+        log::info!(
+            "{} [{}] backend {pid}: {}",
+            Op::new(
+                if terminate { "terminate" } else { "cancel" },
+                &database,
+                None
+            ),
+            s.name,
+            if signalled {
+                "signalled"
+            } else {
+                "not signalled"
+            }
+        );
+        Ok(signalled)
     })
     .await
 }

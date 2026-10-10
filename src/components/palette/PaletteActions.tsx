@@ -1,4 +1,5 @@
 import {
+  Activity,
   Database,
   FolderOpen,
   Moon,
@@ -65,7 +66,14 @@ export function PaletteActions({ search, run }: PaletteActionsProps) {
           .getState()
           .openConsole(tab.connection, tab.database),
     });
-    if (tab.kind !== "console") {
+    actions.push({
+      id: "server-activity",
+      icon: <Activity />,
+      label: `Server activity of ${tab.database}`,
+      where: tab.connection.name,
+      perform: () => useSessionsStore.getState().openActivity(tab.connection, tab.database),
+    });
+    if (tab.kind === "table" || tab.kind === "diagram") {
       actions.push({
         id: "schema-diagram",
         icon: <Workflow />,

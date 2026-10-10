@@ -1,3 +1,4 @@
+mod activity;
 mod assistant;
 mod commands;
 mod connection;
@@ -74,6 +75,9 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
         object_commands::list_extensions,
         object_commands::list_available_extensions,
         object_commands::extension_action,
+        object_commands::server_activity,
+        object_commands::server_locks,
+        object_commands::signal_backend,
     ])
 }
 

@@ -1,4 +1,4 @@
-import { Copy, FileCode, FolderPlus, ListTree, Pencil, Plug, RefreshCw, SquareTerminal, Table, Trash2, Unplug, Workflow } from "lucide-react";
+import { Activity, Copy, FileCode, FolderPlus, ListTree, Pencil, Plug, RefreshCw, SquareTerminal, Table, Trash2, Unplug, Workflow } from "lucide-react";
 import { toast } from "sonner";
 import type { MenuEntry } from "@/components/common/ActionMenu";
 
@@ -68,6 +68,7 @@ interface DatabaseMenu {
   database: string;
   connectionName: string;
   onOpenConsole: () => void;
+  onActivity: () => void;
   onRefresh: () => void;
 }
 
@@ -75,6 +76,7 @@ export function databaseMenuEntries(m: DatabaseMenu): MenuEntry[] {
   return [
     { heading: `${m.database} on ${m.connectionName}` },
     { label: `Open SQL console on ${m.database}`, icon: SquareTerminal, onSelect: m.onOpenConsole },
+    { label: "Server activity", icon: Activity, onSelect: m.onActivity },
     { label: "Refresh", icon: RefreshCw, onSelect: m.onRefresh },
     { label: "Copy name", icon: Copy, onSelect: () => copyName(m.database) },
   ];

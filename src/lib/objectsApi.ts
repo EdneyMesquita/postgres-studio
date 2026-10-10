@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AvailableExtension, ExtensionAction, ExtensionInfo } from "../types/objects";
+import type { ActivityRow, AvailableExtension, ExtensionAction, ExtensionInfo, LockRow } from "../types/objects";
 
 /** The commands for extensions, activity, roles and maintenance. */
 export const objectsApi = {
@@ -12,4 +12,19 @@ export const objectsApi = {
   /** Installs, updates or drops one extension; the caller has asked the user. */
   extensionAction: (sessionId: string, database: string, name: string, action: ExtensionAction) =>
     invoke<void>("extension_action", { sessionId, database, name, action }),
+
+  /** Every backend of the server, but the one that asks. */
+  serverActivity: (sessionId: string, database: string) =>
+    invoke<ActivityRow[]>("server_activity", { sessionId, database }),
+
+  /** The locks waiting or blocking; with `all`, every lock. */
+  serverLocks: (sessionId: string, database: string, all: boolean) =>
+    invoke<LockRow[]>("server_locks", { sessionId, database, all }),
+
+  /**
+   * Cancels the backend's query, or with `terminate` ends its session.
+   * Resolves to whether the server signalled it.
+   */
+  signalBackend: (sessionId: string, database: string, pid: number, terminate: boolean) =>
+    invoke<boolean>("signal_backend", { sessionId, database, pid, terminate }),
 };

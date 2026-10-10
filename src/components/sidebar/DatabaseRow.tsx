@@ -51,6 +51,7 @@ export function DatabaseRow({ db, sessionId, connection, depth, query }: Databas
             database: db.name,
             connectionName: connection.name,
             onOpenConsole: () => openConsole(connection, db.name),
+            onActivity: () => useSessionsStore.getState().openActivity(connection, db.name),
             onRefresh: () => {
               void refresh(connection.id, sessionId, db.name);
               void useConnectionsStore.getState().refreshDatabases(connection.id);
