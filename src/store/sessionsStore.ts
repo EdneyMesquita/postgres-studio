@@ -75,7 +75,15 @@ export interface DiagramTab {
   focus: string | null;
 }
 
-export type Tab = TableTab | ConsoleTab | DiagramTab;
+/** The server's sessions and locks, one tab per connection and database. */
+export interface ActivityTab {
+  kind: "activity";
+  id: string;
+  connection: TabConnection;
+  database: string;
+}
+
+export type Tab = TableTab | ConsoleTab | DiagramTab | ActivityTab;
 
 export type TabQueryFields = Pick<TableTab, "whereText" | "orderByText" | "limit" | "offset">;
 
@@ -105,6 +113,8 @@ interface SessionsState {
   openConsole: (connection: TabConnection, database: string, options?: { fromAssistant?: boolean }) => string;
   /** Focuses the schema's diagram, opening it if needed; `focus` selects a table. */
   openDiagram: (connection: TabConnection, database: string, schema: string, focus?: string) => void;
+  /** Focuses the database's activity monitor, opening it if needed. */
+  openActivity: (connection: TabConnection, database: string) => void;
   /** Points a console tab at another database of its connection. */
   switchConsoleDatabase: (id: string, database: string) => void;
   activateTab: (id: string) => void;
@@ -269,6 +279,15 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
           return { tabs, activeTabId: id };
         }
         const tab: DiagramTab = { kind: "diagram", id, connection, database, schema, focus: focus ?? null };
+        return { tabs: [...s.tabs, tab], activeTabId: id };
+      });
+    },
+
+    openActivity: (connection, database) => {
+      const id = `activity:${connection.id}/${database}`;
+      set((s) => {
+        if (s.tabs.some((t) => t.id === id)) return { activeTabId: id };
+        const tab: ActivityTab = { kind: "activity", id, connection, database };
         return { tabs: [...s.tabs, tab], activeTabId: id };
       });
     },

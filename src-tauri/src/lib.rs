@@ -1,3 +1,4 @@
+mod activity;
 mod assistant;
 mod commands;
 mod connection;
@@ -7,6 +8,7 @@ mod error;
 mod export;
 mod logging;
 mod models;
+mod object_commands;
 mod paths;
 mod pg;
 mod saved_scripts;
@@ -78,6 +80,14 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
         dump::restore_database,
         commands::graph_catalog,
         commands::graph_label_properties,
+        object_commands::list_extensions,
+        object_commands::list_available_extensions,
+        object_commands::extension_action,
+        object_commands::server_activity,
+        object_commands::server_locks,
+        object_commands::signal_backend,
+        object_commands::list_roles,
+        object_commands::run_maintenance,
     ])
 }
 

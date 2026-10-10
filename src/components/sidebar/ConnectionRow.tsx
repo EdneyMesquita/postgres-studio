@@ -13,6 +13,7 @@ import { DatabaseRow } from "./DatabaseRow";
 import { Highlighted } from "./Highlighted";
 import { RowMenuButton } from "./RowMenuButton";
 import { TreeRow } from "./TreeRow";
+import { useObjectDialogsStore } from "../../store/objectDialogsStore";
 import { connectionMenuEntries } from "./treeMenus";
 
 interface ConnectionRowProps {
@@ -75,6 +76,14 @@ export function ConnectionRow({
       onDisconnect: () => disconnect(profile.id),
       onEdit: () => useUiStore.getState().setConnectionDialog({ mode: "edit", id: profile.id }),
       onDelete: handleDelete,
+      onRoles: session
+        ? () =>
+            useObjectDialogsStore.getState().openRoles({
+              connection: { id: profile.id, name: profile.name, summary: profile.summary },
+              sessionId: session.sessionId,
+              database: session.defaultDatabase,
+            })
+        : undefined,
     });
 
   return (

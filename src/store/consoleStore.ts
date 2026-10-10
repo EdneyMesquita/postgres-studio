@@ -75,7 +75,7 @@ const blankSession: ConsoleSession = {
 export function currentConsoleTarget() {
   const tab = selectActiveTab(useSessionsStore.getState());
   if (!tab) return null;
-  if (tab.kind === "diagram") return null;
+  if (tab.kind === "diagram" || tab.kind === "activity") return null;
   if (tab.kind === "table" && (useUiStore.getState().mainTabs[tab.id] ?? "data") !== "sql") return null;
   const session = useConnectionsStore.getState().sessions[tab.connection.id] ?? null;
   const untouched = defaultScript(tab);

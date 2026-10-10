@@ -2,6 +2,7 @@ import { lazy, Suspense } from "react";
 import { useDumpStore } from "../../store/dumpStore";
 import { useUiStore } from "../../store/uiStore";
 import { ConfirmDialog } from "../common/ConfirmDialog";
+import { ObjectDialogs } from "../objects/ObjectDialogs";
 
 // Loaded on first use, keeping them out of the startup bundle.
 const ConnectionForm = lazy(() =>
@@ -46,6 +47,7 @@ export function DialogHost() {
   return (
     <>
       <Suspense fallback={null}>{content}</Suspense>
+      <ObjectDialogs />
       <ConfirmDialog />
     </>
   );

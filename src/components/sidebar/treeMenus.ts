@@ -1,6 +1,10 @@
-import { Copy, DatabaseBackup, DatabaseZap, FileCode, FolderPlus, ListTree, Pencil, Plug, RefreshCw, SquareTerminal, Table, Trash2, Unplug, Workflow } from "lucide-react";
+import { Activity, Copy, DatabaseBackup, DatabaseZap, FileCode, FolderPlus, ListTree, Pencil, Plug, Puzzle, RefreshCw, SquareTerminal, Table, Trash2, Unplug, Users, Workflow, Wrench } from "lucide-react";
 import { toast } from "sonner";
 import type { MenuEntry } from "@/components/common/ActionMenu";
+import { GENERATE_LABEL, MAINTENANCE_LABEL, generatableFor, maintenanceFor } from "@/lib/tableActions";
+import type { GenerateKind } from "@/lib/tableActions";
+import type { MaintenanceAction } from "../../types/objects";
+import type { RelKind } from "../../types/pg";
 
 /** Copies a name for pasting into a query or a script. */
 function copyName(name: string) {
@@ -51,6 +55,8 @@ interface ConnectionMenu {
   onDisconnect: () => void;
   onEdit: () => void;
   onDelete: () => void;
+  /** The server's roles; offered while connected. */
+  onRoles?: () => void;
 }
 
 export function connectionMenuEntries(m: ConnectionMenu): MenuEntry[] {
@@ -58,6 +64,7 @@ export function connectionMenuEntries(m: ConnectionMenu): MenuEntry[] {
     m.connected
       ? { label: "Disconnect", icon: Unplug, onSelect: m.onDisconnect }
       : { label: "Connect", icon: Plug, onSelect: m.onConnect },
+    ...(m.connected && m.onRoles ? [{ label: "Roles…", icon: Users, onSelect: m.onRoles }] : []),
     { label: "Edit connection...", icon: Pencil, onSelect: m.onEdit },
     { separator: true },
     { label: "Delete connection...", icon: Trash2, danger: true, onSelect: m.onDelete },
@@ -68,6 +75,8 @@ interface DatabaseMenu {
   database: string;
   connectionName: string;
   onOpenConsole: () => void;
+  onActivity: () => void;
+  onExtensions: () => void;
   onRefresh: () => void;
   onBackup: () => void;
   onRestore: () => void;
@@ -77,6 +86,8 @@ export function databaseMenuEntries(m: DatabaseMenu): MenuEntry[] {
   return [
     { heading: `${m.database} on ${m.connectionName}` },
     { label: `Open SQL console on ${m.database}`, icon: SquareTerminal, onSelect: m.onOpenConsole },
+    { label: "Server activity", icon: Activity, onSelect: m.onActivity },
+    { label: "Manage extensions…", icon: Puzzle, onSelect: m.onExtensions },
     { label: "Refresh", icon: RefreshCw, onSelect: m.onRefresh },
     { separator: true },
     { label: "Back up with pg_dump...", icon: DatabaseBackup, onSelect: m.onBackup },
@@ -113,6 +124,11 @@ interface RelationMenu {
   onShowDefinition: () => void;
   /** Tables only: the schema diagram around it. */
   onDiagram?: () => void;
+  kind?: RelKind;
+  /** TRUNCATE can't run on a read-only connection. */
+  readOnly?: boolean;
+  onMaintenance?: (action: MaintenanceAction) => void;
+  onGenerate?: (kind: GenerateKind) => void;
 }
 
 export function relationMenuEntries(m: RelationMenu): MenuEntry[] {
@@ -131,10 +147,40 @@ export function relationMenuEntries(m: RelationMenu): MenuEntry[] {
     { label: "Query in SQL", icon: SquareTerminal, onSelect: m.onOpenSql },
     { label: "Show DDL in a console", icon: FileCode, onSelect: m.onShowDefinition },
     ...(m.onDiagram ? [{ label: "Show in schema diagram", icon: Workflow, onSelect: m.onDiagram }] : []),
+    ...tableToolsEntries(m),
     { separator: true },
     { label: "Copy name", icon: Copy, onSelect: () => copyName(m.name) },
     { label: "Copy qualified name", icon: Copy, onSelect: () => copyName(m.qualified) },
   ];
+}
+
+/** The Maintenance and Generate SQL submenus, for what the relation's kind allows. */
+function tableToolsEntries(m: RelationMenu): MenuEntry[] {
+  if (!m.kind) return [];
+  const maintenance = m.onMaintenance ? maintenanceFor(m.kind) : [];
+  const generate = m.onGenerate ? generatableFor(m.kind) : [];
+  const entries: MenuEntry[] = [];
+  if (maintenance.length > 0 || generate.length > 0) entries.push({ separator: true });
+  if (maintenance.length > 0) {
+    entries.push({
+      submenu: "Maintenance",
+      icon: Wrench,
+      entries: maintenance.map((action) => ({
+        label: MAINTENANCE_LABEL[action],
+        danger: action === "truncate",
+        disabled: action === "truncate" && m.readOnly,
+        onSelect: () => m.onMaintenance?.(action),
+      })),
+    });
+  }
+  if (generate.length > 0) {
+    entries.push({
+      submenu: "Generate SQL",
+      icon: FileCode,
+      entries: generate.map((kind) => ({ label: GENERATE_LABEL[kind], onSelect: () => m.onGenerate?.(kind) })),
+    });
+  }
+  return entries;
 }
 
 interface FunctionMenu {

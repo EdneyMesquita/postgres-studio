@@ -1,4 +1,4 @@
-import { Database, Layers, SquareTerminal, Table, Workflow } from "lucide-react";
+import { Activity, Database, Layers, SquareTerminal, Table, Workflow } from "lucide-react";
 import type { ReactNode } from "react";
 import type { Tab } from "../../store/sessionsStore";
 
@@ -54,6 +54,10 @@ export function Breadcrumb({ tab }: BreadcrumbProps) {
             Schema diagram
           </Crumb>
         </>
+      ) : tab.kind === "activity" ? (
+        <Crumb icon={<Activity />} last>
+          Server activity
+        </Crumb>
       ) : (
         <Crumb icon={<SquareTerminal />} last>
           Console

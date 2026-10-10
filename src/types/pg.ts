@@ -94,12 +94,28 @@ export interface IndexInfo {
   scans: number | null;
   columns: string[];
   constraint: string | null;
+  /** False after a failed CREATE INDEX CONCURRENTLY. */
+  valid: boolean;
+  partial: boolean;
+  /** The WHERE clause of a partial index. */
+  predicate: string | null;
+  /** A key is an expression, not a column. */
+  expression: boolean;
+  /** Columns carried by INCLUDE. */
+  include: string[];
 }
 
 export interface TriggerInfo {
   name: string;
   definition: string;
   enabled: boolean;
+  /** pg_trigger.tgenabled: O on, D off, R replica only, A always. */
+  enabledState: string;
+  timing: "BEFORE" | "AFTER" | "INSTEAD OF";
+  events: string[];
+  level: "row" | "statement";
+  /** The function it runs, e.g. audit.log_change(). */
+  function: string;
 }
 
 export interface TableStats {
