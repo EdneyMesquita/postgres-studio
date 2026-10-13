@@ -329,6 +329,22 @@ struct Listed {
     caggs: Vec<ListedHypertable>,
 }
 
+/// `approximate_row_count` of the hypertable named by the two SQL
+/// expressions, or NULL where it isn't safe: on the Apache edition it
+/// crashes the backend (signal 11, 2.30.2) for a hypertable holding
+/// compressed chunks — which such a server can only have from a restore or
+/// a license change, but then every listing would take the server down.
+/// CASE only evaluates the call when the guard holds.
+fn approx_rows_sql(schema: &str, name: &str) -> String {
+    format!(
+        "CASE WHEN coalesce(current_setting('timescaledb.license', true), '') = 'timescale'
+                OR NOT EXISTS (SELECT 1 FROM timescaledb_information.chunks c
+                               WHERE c.hypertable_schema = {schema} AND c.hypertable_name = {name}
+                                 AND c.is_compressed)
+              THEN approximate_row_count(format('%I.%I', {schema}, {name})::regclass) END"
+    )
+}
+
 /// Marks the hypertables among `objects.tables` and moves the continuous
 /// aggregates out of `objects.views` into `objects.continuous_aggregates`.
 /// Called only when `probe` found the extension. The explorer must keep
@@ -346,17 +362,22 @@ pub async fn annotate_schema_objects(
             'hypertables', (SELECT coalesce(json_agg(json_build_object(
                     'name', h.hypertable_name,
                     'sizeBytes', hypertable_approximate_size(format('%I.%I', h.hypertable_schema, h.hypertable_name)::regclass),
-                    'rows', approximate_row_count(format('%I.%I', h.hypertable_schema, h.hypertable_name)::regclass)
+                    'rows', {rows_h}
                 ) ORDER BY h.hypertable_name), '[]')
                 FROM timescaledb_information.hypertables h WHERE h.hypertable_schema = {schema}),
             'caggs', (SELECT coalesce(json_agg(json_build_object(
                     'name', ca.view_name,
                     'sizeBytes', hypertable_approximate_size(format('%I.%I', ca.materialization_hypertable_schema, ca.materialization_hypertable_name)::regclass),
-                    'rows', approximate_row_count(format('%I.%I', ca.materialization_hypertable_schema, ca.materialization_hypertable_name)::regclass)
+                    'rows', {rows_ca}
                 ) ORDER BY ca.view_name), '[]')
                 FROM timescaledb_information.continuous_aggregates ca WHERE ca.view_schema = {schema})
          )",
-        schema = literal(schema)
+        schema = literal(schema),
+        rows_h = approx_rows_sql("h.hypertable_schema", "h.hypertable_name"),
+        rows_ca = approx_rows_sql(
+            "ca.materialization_hypertable_schema",
+            "ca.materialization_hypertable_name"
+        ),
     );
     let listed: Listed = match json_query(client, &sql).await {
         Ok(listed) => listed.unwrap_or_default(),
@@ -411,7 +432,7 @@ fn table_facts_sql(schema: &str, name: &str) -> String {
                           AND c.is_compressed),
                     'columnstore', h.compression_enabled,
                     'totalBytes', hypertable_size(format('%I.%I', h.hypertable_schema, h.hypertable_name)::regclass),
-                    'approxRows', approximate_row_count(format('%I.%I', h.hypertable_schema, h.hypertable_name)::regclass))
+                    'approxRows', {rows_h})
                 FROM timescaledb_information.hypertables h
                 WHERE h.hypertable_schema = {schema} AND h.hypertable_name = {name}),
             'cagg', (SELECT json_build_object(
@@ -424,7 +445,7 @@ fn table_facts_sql(schema: &str, name: &str) -> String {
                     'materializedOnly', ca.materialized_only,
                     'columnstore', ca.compression_enabled,
                     'totalBytes', hypertable_size(format('%I.%I', ca.materialization_hypertable_schema, ca.materialization_hypertable_name)::regclass),
-                    'approxRows', approximate_row_count(format('%I.%I', ca.materialization_hypertable_schema, ca.materialization_hypertable_name)::regclass))
+                    'approxRows', {rows_ca})
                 FROM timescaledb_information.continuous_aggregates ca
                 -- a hierarchical aggregate's hypertable is its parent's materialization
                 LEFT JOIN timescaledb_information.continuous_aggregates p
@@ -439,6 +460,46 @@ fn table_facts_sql(schema: &str, name: &str) -> String {
          )",
         schema = literal(schema),
         name = literal(name),
+        rows_h = approx_rows_sql("h.hypertable_schema", "h.hypertable_name"),
+        rows_ca = approx_rows_sql(
+            "ca.materialization_hypertable_schema",
+            "ca.materialization_hypertable_name"
+        ),
+    )
+}
+
+/// One index of a hypertable, sized and counted across its chunks.
+#[derive(Deserialize)]
+struct IndexFacts {
+    name: String,
+    size: Option<i64>,
+    scans: Option<i64>,
+}
+
+/// The hypertable's own indexes are empty, so their size and scans come from
+/// the chunks. `hypertable_index_size` sums an index over every chunk. A
+/// chunk's copy of an index is named `<chunk>_<index>`, cut to 63 bytes. A
+/// compressed chunk keeps its rows in another table with other indexes, so
+/// its scans don't map to anything and only rowstore chunks are counted.
+fn index_facts_sql(schema: &str, name: &str) -> String {
+    format!(
+        "SELECT coalesce(json_agg(json_build_object(
+                'name', i.relname,
+                'size', hypertable_index_size(i.oid::regclass),
+                'scans', (SELECT sum(s.idx_scan)
+                    FROM timescaledb_information.chunks c
+                    JOIN pg_stat_all_indexes s
+                      ON s.schemaname = c.chunk_schema AND s.relname = c.chunk_name
+                     AND s.indexrelname = left(c.chunk_name || '_' || i.relname, 63)
+                    WHERE c.hypertable_schema = {schema} AND c.hypertable_name = {name}
+                      AND NOT c.is_compressed)
+            )), '[]')
+         FROM pg_index x
+         JOIN pg_class i ON i.oid = x.indexrelid
+         WHERE x.indrelid = {table}",
+        schema = literal(schema),
+        name = literal(name),
+        table = regclass(schema, name),
     )
 }
 
@@ -476,6 +537,19 @@ async fn annotate(
         info.row_estimate = h.approx_rows;
         info.triggers
             .retain(|t| !HIDDEN_TRIGGERS.contains(&t.name.as_str()));
+        // a failure keeps the catalog's figures: the page loses only these
+        let indexes: Vec<IndexFacts> = soft(
+            "index sizes and scans",
+            json_query(client, &index_facts_sql(&info.schema, &info.name))
+                .await
+                .map(Option::unwrap_or_default),
+        );
+        for index in &mut info.indexes {
+            if let Some(found) = indexes.iter().find(|f| f.name == index.name) {
+                index.size_bytes = found.size;
+                index.scans = found.scans;
+            }
+        }
         let settings = if h.columnstore {
             soft(
                 "columnstore settings",
@@ -1624,6 +1698,57 @@ mod live_tests {
         assert!(all
             .iter()
             .any(|j| j.kind == "refresh" && j.target_name.as_deref() == Some("metrics_hourly")));
+        s.shutdown().await;
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn live_hypertable_index_sizes_and_scans() {
+        let Some(s) = session("POSTGRES_STUDIO_TIMESCALE_URI").await else {
+            return;
+        };
+        let c = s.client(&s.target.default_db).await.unwrap();
+
+        let metrics = catalog::describe_table(&c, "public", "metrics")
+            .await
+            .unwrap();
+        let index = metrics
+            .indexes
+            .iter()
+            .find(|i| i.name == "metrics_time_idx")
+            .unwrap();
+        let size = index.size_bytes.unwrap();
+        assert!(size > 8192, "{index:?}");
+        let summed: i64 = c
+            .client
+            .query_one(
+                "SELECT hypertable_index_size('public.metrics_time_idx')",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(size, summed);
+
+        // the newest chunk, read through its time index
+        c.client
+            .batch_execute(
+                "SET enable_seqscan = off;
+                 SELECT * FROM public.metrics WHERE time > now() - interval '1 hour' ORDER BY time DESC LIMIT 5;
+                 RESET enable_seqscan;
+                 SELECT pg_stat_force_next_flush();",
+            )
+            .await
+            .unwrap();
+        let after = catalog::describe_table(&c, "public", "metrics")
+            .await
+            .unwrap();
+        let index = after
+            .indexes
+            .iter()
+            .find(|i| i.name == "metrics_time_idx")
+            .unwrap();
+        assert!(index.scans.unwrap_or(0) > 0, "{index:?}");
         s.shutdown().await;
     }
 
