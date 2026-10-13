@@ -250,7 +250,7 @@ function RunStatus({ job }: { job: JobInfo }) {
 }
 
 function jobEntries({ tab, ts }: Props) {
-  const block = ts.block(false);
+  const block = ts.block(true);
   async function run(job: JobInfo, what: "run" | "pause" | "resume") {
     if (!ts.target) return;
     const name = `job ${job.jobId} (${job.procName})`;

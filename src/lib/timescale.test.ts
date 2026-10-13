@@ -36,6 +36,8 @@ describe("shortInterval", () => {
     ["2 mons", "2 mo"],
     ["1 year", "1 y"],
     ["02:01:13.5", "2 h 1 min"],
+    ["00:39:14.763696", "39 min 15 s"],
+    ["00:00:14.2", "14.2 s"],
     ["1 hour", "1 h"],
     ["60 days", "60 d"],
   ])("reads %j as %j", (input, expected) => {

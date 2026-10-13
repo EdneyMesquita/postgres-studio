@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Trash2, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { compactRange } from "@/lib/chunkChart";
 import { Modal } from "@/components/ui/Modal";
 import { formatBytes, formatInt } from "@/lib/format";
 import { timescaleApi } from "@/lib/timescaleApi";
@@ -135,9 +136,11 @@ export function DropChunksDialog({
                 <tbody>
                   {current.preview.chunks.map((c) => (
                     <tr key={`${c.schema}.${c.name}`}>
-                      <td className={`${td} font-data`}>{c.schema}.{c.name}</td>
+                      <td className={`${td} font-data`} title={`${c.schema}.${c.name}`}>
+                        {c.name}
+                      </td>
                       <td className={`${td} font-data text-fg-2`}>
-                        {c.rangeStart ?? "…"} → {c.rangeEnd ?? "…"}
+                        {compactRange(c.rangeStart, c.rangeEnd)}
                       </td>
                       <td className={`${td} text-fg-2`}>{c.isCompressed ? "columnstore" : "rowstore"}</td>
                       <td className={`${td} text-right tabular-nums`}>{c.totalBytes != null ? formatBytes(c.totalBytes) : "—"}</td>

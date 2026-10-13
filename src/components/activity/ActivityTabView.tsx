@@ -125,7 +125,7 @@ export const ActivityTabView = memo(function ActivityTabView({ tab, shown }: { t
   const selectedRow = shownRows.find((r) => r.pid === selected) ?? null;
   const shownJobs = useMemo(() => filterJobs(jobs ?? [], { failedOnly, hideInternal }), [jobs, failedOnly, hideInternal]);
   const selectedJobRow = shownJobs.find((j) => j.jobId === selectedJob) ?? null;
-  const actionBlock = timescaleActionBlock(info, readOnly, false);
+  const actionBlock = timescaleActionBlock(info, readOnly, true);
 
   async function stop(pid: number, user: string | null, query: string | null, own: boolean, terminate: boolean) {
     if (!sessionId) return;

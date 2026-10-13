@@ -1,6 +1,6 @@
 //! Commands for TimescaleDB. Reads work on any edition and version the
 //! probe finds; the actions need the 2.18+ API, refuse a read-only
-//! connection and, for the TSL features, the Apache edition. The reads and
+//! connection and, all but drop_chunks, the Apache edition. The reads and
 //! statements themselves live in `pg::timescale` and `pg::timescale_actions`.
 
 use tauri::State;
@@ -35,18 +35,11 @@ fn refuse(s: &PgSession, ts: &TimescaleInfo, action: &TimescaleAction) -> AppRes
             ts.version
         )));
     }
-    // drop_chunks and the job controls are in the Apache edition too
-    let needs_community = matches!(
-        action,
-        TimescaleAction::RefreshCagg { .. }
-            | TimescaleAction::ToColumnstore { .. }
-            | TimescaleAction::ToRowstore { .. }
-            | TimescaleAction::SetRealtime { .. }
-    );
-    if needs_community && !ts.community {
+    // only drop_chunks is in the Apache edition; it refuses alter_job too
+    if !matches!(action, TimescaleAction::DropChunks { .. }) && !ts.community {
         return Err(AppError::InvalidInput(
             "This server runs the Apache edition of TimescaleDB, which leaves out continuous \
-             aggregates and the columnstore."
+             aggregates, the columnstore and job control."
                 .to_string(),
         ));
     }

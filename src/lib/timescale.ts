@@ -101,9 +101,12 @@ export function shortInterval(text: string | null | undefined): string {
   }
   if (!parsed) return raw;
 
-  const parts = ORDER.filter((u) => (totals[u] ?? 0) !== 0)
-    .slice(0, 2)
-    .map((u) => `${Number((totals[u] as number).toFixed(2))} ${UNIT_LABELS[u]}`);
+  const units = ORDER.filter((u) => (totals[u] ?? 0) !== 0).slice(0, 2);
+  // a lag like 00:39:14.2 reads as "39 min 14 s": fractions only on their own
+  const parts = units.map((u) => {
+    const value = totals[u] as number;
+    return `${u === "s" && units.length > 1 ? Math.round(value) : Number(value.toFixed(2))} ${UNIT_LABELS[u]}`;
+  });
   return parts.length ? parts.join(" ") : "0 s";
 }
 
