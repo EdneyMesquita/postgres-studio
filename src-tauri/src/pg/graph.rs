@@ -22,6 +22,9 @@ pub struct GraphCatalog {
     pub graphs: Vec<GraphInfo>,
     /// SQL/PGQ property graphs: empty on every server that lacks them.
     pub property_graphs: Vec<PropertyGraphInfo>,
+    /// TimescaleDB, when installed.
+    #[serde(default)]
+    pub timescale: Option<super::timescale::TimescaleInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,6 +117,7 @@ pub async fn graph_catalog(client: &PgClient) -> AppResult<GraphCatalog> {
         vector: probe.vector,
         graphs,
         property_graphs,
+        timescale: super::timescale::probe(client).await?,
     })
 }
 

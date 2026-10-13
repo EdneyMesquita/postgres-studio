@@ -96,6 +96,13 @@ pub struct RelationEntry {
     pub kind: String,
     pub row_estimate: Option<i64>,
     pub comment: Option<String>,
+    /// `hypertable` or `cagg` on a database with TimescaleDB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timescale: Option<String>,
+    /// A hypertable's or cagg's size on disk, its chunks included: the
+    /// parent table itself is empty, so its row estimate says nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,6 +131,10 @@ pub struct SchemaObjects {
     pub tables: Vec<RelationEntry>,
     pub views: Vec<RelationEntry>,
     pub materialized_views: Vec<RelationEntry>,
+    /// TimescaleDB continuous aggregates: views to the catalog, moved out
+    /// of `views`.
+    #[serde(default)]
+    pub continuous_aggregates: Vec<RelationEntry>,
     pub sequences: Vec<RelationEntry>,
     pub functions: Vec<FunctionEntry>,
     pub types: Vec<TypeEntry>,
@@ -174,9 +185,13 @@ pub async fn list_schema_objects(client: &PgClient, schema: &str) -> AppResult<S
         type_ext = not_extension("pg_type", "t.oid"),
         schema = literal(schema),
     );
-    json_query(client, &sql)
+    let mut objects: SchemaObjects = json_query(client, &sql)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("schema {schema}")))
+        .ok_or_else(|| AppError::NotFound(format!("schema {schema}")))?;
+    if super::timescale::probe(client).await?.is_some() {
+        super::timescale::annotate_schema_objects(client, schema, &mut objects).await?;
+    }
+    Ok(objects)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -318,6 +333,13 @@ pub struct TableInfo {
     pub row_key: Vec<String>,
     #[serde(default)]
     pub ddl: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hypertable: Option<super::timescale::HypertableSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cagg: Option<super::timescale::CaggSummary>,
+    /// Set when the relation is a chunk of a hypertable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunk: Option<super::timescale::ChunkParent>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -518,6 +540,9 @@ pub async fn describe_table(client: &PgClient, schema: &str, table: &str) -> App
         .ok_or_else(|| AppError::NotFound(format!("table {schema}.{table}")))?;
     info.row_key = row_key(&info);
     info.ddl = ddl(&info);
+    if let Some(ts) = super::timescale::probe(client).await? {
+        super::timescale::annotate_table(client, &mut info, &ts).await?;
+    }
     Ok(info)
 }
 
@@ -760,6 +785,9 @@ mod tests {
             stats: None,
             row_key: vec![],
             ddl: String::new(),
+            hypertable: None,
+            cagg: None,
+            chunk: None,
         }
     }
 
