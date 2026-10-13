@@ -649,7 +649,7 @@ async fn resolve(client: &PgClient, table: &str) -> Result<(String, String), Str
 async fn list_tables(client: &PgClient, schema: Option<&str>) -> Result<Done, String> {
     let filter = schema
         .map(|s| format!("AND n.nspname = {}", literal(s)))
-        .unwrap_or_else(|| "AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\\_%'".to_string());
+        .unwrap_or_else(|| "AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\\_%' AND n.nspname NOT LIKE '\\_timescaledb\\_%'".to_string());
     let sql = format!(
         "SELECT coalesce(json_agg(json_build_array(n.nspname, c.relname, c.relkind,
                 CASE WHEN c.reltuples < 0 THEN NULL ELSE c.reltuples::bigint END)
@@ -661,16 +661,45 @@ async fn list_tables(client: &PgClient, schema: Option<&str>) -> Result<Done, St
         .await
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
+    // The TimescaleDB views exist only where the extension is installed.
+    let installed: bool = json_query(
+        client,
+        "SELECT to_json(EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb'))",
+    )
+    .await
+    .map_err(|e| e.to_string())?
+    .unwrap_or(false);
+    let timescale: Vec<(String, String, String)> = if installed {
+        json_query(
+            client,
+            "SELECT coalesce(json_agg(json_build_array(t.schema, t.name, t.kind)), '[]') FROM (
+                SELECT hypertable_schema AS schema, hypertable_name AS name, 'hypertable' AS kind
+                FROM timescaledb_information.hypertables
+                UNION ALL
+                SELECT view_schema, view_name, 'continuous aggregate'
+                FROM timescaledb_information.continuous_aggregates
+            ) t",
+        )
+        .await
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let lines: Vec<String> = rows
         .iter()
         .map(|(s, n, kind, est)| {
-            let kind = match kind.as_str() {
+            let labelled = timescale
+                .iter()
+                .find(|(ts, tn, _)| ts == s && tn == n)
+                .map(|(_, _, label)| label.as_str());
+            let kind = labelled.unwrap_or(match kind.as_str() {
                 "v" => "view",
                 "m" => "materialized view",
                 "f" => "foreign table",
                 "p" => "partitioned table",
                 _ => "table",
-            };
+            });
             match est {
                 Some(e) => format!("{s}.{n} ({kind}, ~{} rows)", thousands((*e).max(0) as u64)),
                 None => format!("{s}.{n} ({kind})"),
@@ -685,16 +714,102 @@ async fn list_tables(client: &PgClient, schema: Option<&str>) -> Result<Done, St
     })
 }
 
+/// What a relation is, in the words the assistant reads.
+fn kind_label(info: &catalog::TableInfo) -> &'static str {
+    if info.hypertable.is_some() {
+        return "hypertable";
+    }
+    if info.cagg.is_some() {
+        return "continuous aggregate";
+    }
+    if info.chunk.is_some() {
+        return "chunk";
+    }
+    match info.kind.as_str() {
+        "v" => "view",
+        "m" => "materialized view",
+        _ => "table",
+    }
+}
+
+/// The TimescaleDB facts of a hypertable, continuous aggregate or chunk.
+fn timescale_facts(info: &catalog::TableInfo) -> String {
+    let mut out = String::new();
+    if let Some(h) = &info.hypertable {
+        out.push_str("TimescaleDB hypertable:\n");
+        if let Some(d) = h.dimensions.iter().find(|d| d.kind == "Time") {
+            let interval = d
+                .time_interval
+                .clone()
+                .or_else(|| d.integer_interval.map(|i| i.to_string()))
+                .unwrap_or_else(|| "unknown".to_string());
+            out.push_str(&format!(
+                "  time column: {}, chunk interval: {interval}\n",
+                d.column
+            ));
+        }
+        out.push_str(&format!(
+            "  chunks: {} ({} compressed)\n",
+            h.num_chunks, h.compressed_chunks
+        ));
+        if let Some(bytes) = h.total_bytes {
+            out.push_str(&format!(
+                "  total size: {} bytes\n",
+                thousands(bytes.max(0) as u64)
+            ));
+        }
+        if let Some(rows) = h.approx_rows {
+            out.push_str(&format!(
+                "  approximate rows: ~{}\n",
+                thousands(rows.max(0) as u64)
+            ));
+        }
+    }
+    if let Some(c) = &info.cagg {
+        out.push_str(&format!(
+            "TimescaleDB continuous aggregate over {}.{} ({}):\n",
+            c.source_schema, c.source_name, c.source_kind
+        ));
+        if let Some(width) = &c.bucket_width {
+            out.push_str(&format!("  bucket width: {width}\n"));
+        }
+        let realtime = if c.materialized_only { "off" } else { "on" };
+        out.push_str(&format!("  real-time aggregation: {realtime}\n"));
+        if let Some(bytes) = c.total_bytes {
+            out.push_str(&format!(
+                "  total size: {} bytes\n",
+                thousands(bytes.max(0) as u64)
+            ));
+        }
+        if let Some(rows) = c.approx_rows {
+            out.push_str(&format!(
+                "  approximate rows: ~{}\n",
+                thousands(rows.max(0) as u64)
+            ));
+        }
+        out.push_str(&format!("  definition:\n{}\n", c.view_definition));
+    }
+    if let Some(p) = &info.chunk {
+        out.push_str(&format!(
+            "TimescaleDB chunk of {}.{} ({}).\n",
+            p.hypertable_schema,
+            p.hypertable_name,
+            if p.is_compressed {
+                "compressed"
+            } else {
+                "not compressed"
+            }
+        ));
+    }
+    out
+}
+
 fn describe(info: &catalog::TableInfo, indexes: bool) -> String {
     let mut out = format!(
         "{}.{} ({}{})\nColumns:\n",
         info.schema,
         info.name,
-        match info.kind.as_str() {
-            "v" => "view",
-            "m" => "materialized view",
-            _ => "table",
-        },
+        kind_label(info),
         info.row_estimate
             .map(|e| format!(", ~{} rows", thousands(e.max(0) as u64)))
             .unwrap_or_default()
@@ -764,6 +879,7 @@ fn describe(info: &catalog::TableInfo, indexes: bool) -> String {
             out.push_str(&format!("  {}\n", i.definition));
         }
     }
+    out.push_str(&timescale_facts(info));
     out
 }
 
@@ -821,6 +937,183 @@ mod tests {
     use super::super::test_support::{inner_with, session, RecordingHost};
     use super::super::AssistantPolicy;
     use super::*;
+
+    fn plain_table(kind: &str) -> catalog::TableInfo {
+        catalog::TableInfo {
+            schema: "public".to_string(),
+            name: "metrics".to_string(),
+            kind: kind.to_string(),
+            row_estimate: None,
+            size_bytes: None,
+            comment: None,
+            columns: vec![],
+            constraints: vec![],
+            referenced_by: vec![],
+            indexes: vec![],
+            triggers: vec![],
+            view_definition: None,
+            stats: None,
+            row_key: vec![],
+            ddl: String::new(),
+            hypertable: None,
+            cagg: None,
+            chunk: None,
+        }
+    }
+
+    fn hypertable_facts() -> crate::pg::timescale::HypertableSummary {
+        use crate::pg::timescale::{Dimension, HypertableSummary};
+        HypertableSummary {
+            dimensions: vec![Dimension {
+                number: 1,
+                column: "time".to_string(),
+                column_type: "timestamp with time zone".to_string(),
+                kind: "Time".to_string(),
+                time_interval: Some("1 day".to_string()),
+                integer_interval: None,
+                num_partitions: None,
+            }],
+            num_chunks: 31,
+            compressed_chunks: 24,
+            columnstore: true,
+            total_bytes: Some(1_234_567),
+            approx_rows: Some(45_000),
+        }
+    }
+
+    #[test]
+    fn describe_adds_the_hypertable_facts() {
+        let mut t = plain_table("r");
+        t.hypertable = Some(hypertable_facts());
+        let text = describe(&t, false);
+        assert!(text.starts_with("public.metrics (hypertable)\n"), "{text}");
+        assert!(text.contains("TimescaleDB hypertable:\n"), "{text}");
+        assert!(
+            text.contains("time column: time, chunk interval: 1 day"),
+            "{text}"
+        );
+        assert!(text.contains("chunks: 31 (24 compressed)"), "{text}");
+        assert!(text.contains("total size: 1,234,567 bytes"), "{text}");
+        assert!(text.contains("approximate rows: ~45,000"), "{text}");
+    }
+
+    #[test]
+    fn describe_adds_the_continuous_aggregate_facts() {
+        use crate::pg::timescale::CaggSummary;
+        let cagg = |materialized_only: bool| CaggSummary {
+            source_schema: "public".to_string(),
+            source_name: "metrics".to_string(),
+            source_kind: "hypertable".to_string(),
+            materialization_schema: "_timescaledb_internal".to_string(),
+            materialization_name: "_materialized_hypertable_7".to_string(),
+            view_definition:
+                "SELECT time_bucket('1 hour', time) AS bucket, avg(value) FROM metrics GROUP BY 1"
+                    .to_string(),
+            materialized_only,
+            columnstore: false,
+            bucket_width: Some("1 hour".to_string()),
+            total_bytes: Some(8192),
+            approx_rows: Some(720),
+        };
+        let mut t = plain_table("v");
+        t.cagg = Some(cagg(false));
+        let text = describe(&t, false);
+        assert!(
+            text.starts_with("public.metrics (continuous aggregate)\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("continuous aggregate over public.metrics (hypertable)"),
+            "{text}"
+        );
+        assert!(text.contains("bucket width: 1 hour"), "{text}");
+        assert!(text.contains("real-time aggregation: on"), "{text}");
+        assert!(text.contains("total size: 8,192 bytes"), "{text}");
+        assert!(
+            text.contains("definition:\nSELECT time_bucket('1 hour', time)"),
+            "{text}"
+        );
+        t.cagg = Some(cagg(true));
+        assert!(describe(&t, false).contains("real-time aggregation: off"));
+    }
+
+    #[test]
+    fn describe_adds_the_chunk_facts() {
+        use crate::pg::timescale::ChunkParent;
+        let mut t = plain_table("r");
+        t.name = "_hyper_1_4_chunk".to_string();
+        t.schema = "_timescaledb_internal".to_string();
+        t.chunk = Some(ChunkParent {
+            hypertable_schema: "public".to_string(),
+            hypertable_name: "metrics".to_string(),
+            is_compressed: true,
+        });
+        let text = describe(&t, false);
+        assert!(
+            text.starts_with("_timescaledb_internal._hyper_1_4_chunk (chunk)\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("TimescaleDB chunk of public.metrics (compressed)."),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_plain_table_has_no_timescale_facts() {
+        let text = describe(&plain_table("r"), true);
+        assert!(text.starts_with("public.metrics (table)\n"), "{text}");
+        assert!(!text.contains("TimescaleDB"), "{text}");
+    }
+
+    /// The Timescale server's `tsdb`: list_tables labels its hypertables and
+    /// continuous aggregates, and leaves the chunks out.
+    #[tokio::test]
+    #[ignore = "needs POSTGRES_STUDIO_TIMESCALE_URI"]
+    async fn live_list_tables_labels_the_timescale_relations() {
+        use crate::models::{
+            ConnectionAdvancedOptions, ConnectionProfile, ConnectionSource, SslMode, TlsOptions,
+        };
+        let uri = std::env::var("POSTGRES_STUDIO_TIMESCALE_URI")
+            .unwrap_or_else(|_| panic!("set POSTGRES_STUDIO_TIMESCALE_URI"));
+        let profile = ConnectionProfile {
+            id: "live-timescale".into(),
+            name: "live-timescale".into(),
+            color: None,
+            source: ConnectionSource::Uri { uri },
+            database: None,
+            username: None,
+            has_password: false,
+            tls: TlsOptions {
+                ssl_mode: SslMode::Disable,
+                ..Default::default()
+            },
+            ssh_tunnel: None,
+            advanced: ConnectionAdvancedOptions::default(),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let known = Arc::new(crate::ssh_tunnel::KnownHosts::load(&std::env::temp_dir()).unwrap());
+        let session =
+            crate::pg::PgSession::connect(&profile, &crate::secrets::InMemoryStore::new(), &known)
+                .await
+                .unwrap();
+        let client = session.client("tsdb").await.unwrap();
+        let text = list_tables(&client, Some("public")).await.unwrap().text;
+        assert!(text.contains("public.metrics (hypertable"), "{text}");
+        assert!(
+            text.contains("public.metrics_hourly (continuous aggregate"),
+            "{text}"
+        );
+        assert!(text.contains("public.devices (table"), "{text}");
+        let all = list_tables(&client, None).await.unwrap().text;
+        assert!(
+            all.contains("Telemetry.Sensor Readings (hypertable"),
+            "{all}"
+        );
+        assert!(!all.contains("_timescaledb_"), "{all}");
+        session.shutdown().await;
+    }
 
     #[test]
     fn only_one_read_statement_gets_through() {

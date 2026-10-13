@@ -64,8 +64,7 @@ pub async fn extension_action(
     let op = Op::new("extension", &database, Some(&name));
     on_session(&state, &session_id, op, async |s| {
         refuse_when_read_only(&s)?;
-        let client = s.client(&database).await?;
-        objects::run_extension_action(&client, &name, &action).await?;
+        objects::run_extension_action(&s, &database, &name, &action).await?;
         log::info!(
             "{} [{}] {}",
             Op::new("extension", &database, Some(&name)),
