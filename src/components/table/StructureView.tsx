@@ -14,7 +14,9 @@ import { openSql } from "../objects/openSql";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { SqlText } from "../console/SqlText";
-import type { ReactNode } from "react";
+import { Section, td, th } from "./structureParts";
+import { TimescaleHeaderExtras, TimescaleHead, TimescaleTail } from "../timescale/TimescaleSections";
+import { useTimescaleDetail } from "../timescale/useTimescaleDetail";
 
 const CONSTRAINT_KIND: Record<string, { label: string; className: string }> = {
   p: { label: "PRIMARY KEY", className: "text-json-keyword" },
@@ -25,28 +27,12 @@ const CONSTRAINT_KIND: Record<string, { label: string; className: string }> = {
   t: { label: "TRIGGER", className: "text-fg-2" },
 };
 
-function Section({ title, count, action, children }: { title: string; count?: number; action?: ReactNode; children: ReactNode }) {
-  return (
-    <section>
-      <div className="sticky top-0 z-[3] flex h-[34px] items-center gap-1.5 border-t border-line-soft bg-editor pr-2.5 pl-3.5 text-sm font-semibold text-fg-2 first:border-t-0">
-        {title}
-        {count !== undefined && <span className="font-normal text-fg-3">{count}</span>}
-        <span className="flex-1" />
-        {action}
-      </div>
-      {children}
-    </section>
-  );
-}
-
-const th = "sticky top-[34px] z-[2] h-[30px] bg-panel px-3.5 text-left text-sm font-medium whitespace-nowrap text-fg-2 border-b border-line";
-const td = "h-[30px] border-b border-line-soft px-3.5 align-middle";
-
 /** Columns, constraints, indexes and triggers, with the DDL beside them. */
 export function StructureView({ tab }: { tab: TableTab }) {
   const session = useConnectionsStore((s) => s.sessions[tab.connection.id]);
   const [newIndexOpen, setNewIndexOpen] = useState(false);
   const info = tab.info;
+  const ts = useTimescaleDetail(tab);
 
   if (!info) {
     return (
@@ -70,13 +56,17 @@ export function StructureView({ tab }: { tab: TableTab }) {
       <div className="min-w-0 flex-1 overflow-auto pb-6">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-line-soft px-3.5 py-2 text-sm text-fg-2">
           <span>
-            {{ r: "Table", p: "Partitioned table", f: "Foreign table", v: "View", m: "Materialized view", S: "Sequence" }[info.kind]}{" "}
+            {(info.hypertable && "Hypertable") ||
+              (info.cagg && "Continuous aggregate") ||
+              (info.chunk && "Chunk") ||
+              { r: "Table", p: "Partitioned table", f: "Foreign table", v: "View", m: "Materialized view", S: "Sequence" }[info.kind]}{" "}
             <span className="font-mono text-fg">
               {info.schema}.{info.name}
             </span>
           </span>
           {info.rowEstimate !== null && <span>~{formatInt(info.rowEstimate)} rows</span>}
           {info.sizeBytes !== null && <span>{formatBytes(info.sizeBytes)} on disk</span>}
+          <TimescaleHeaderExtras tab={tab} ts={ts} />
           {info.stats?.deadRows ? <span title="Dead rows waiting for vacuum">{formatInt(info.stats.deadRows)} dead rows</span> : null}
           {info.stats?.lastAnalyze && <span>analyzed {info.stats.lastAnalyze.slice(0, 16).replace("T", " ")}</span>}
           {info.comment && <span className="text-fg-3 italic">{info.comment}</span>}
@@ -99,11 +89,13 @@ export function StructureView({ tab }: { tab: TableTab }) {
           </Button>
         </div>
 
+        <TimescaleHead tab={tab} ts={ts} />
+
         {isView && info.viewDefinition && (
           <Section
             title="Definition"
             action={
-              info.kind === "m" ? (
+              info.kind === "m" && !info.cagg ? (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -258,6 +250,8 @@ export function StructureView({ tab }: { tab: TableTab }) {
             <TriggersTable tab={tab} triggers={info.triggers} canToggle={!isView} />
           </Section>
         )}
+
+        <TimescaleTail tab={tab} ts={ts} />
       </div>
       {newIndexOpen && <NewIndexDialog tab={tab} columns={info.columns} onClose={() => setNewIndexOpen(false)} />}
       {/* Beside the tables only when they keep room: the DDL also opens in a console. */}

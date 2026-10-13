@@ -1,0 +1,169 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Aggregate",
+      "Strategy": "Hashed",
+      "Partial Mode": "Finalize",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Startup Cost": 9201.0,
+      "Total Cost": 9201.12,
+      "Plan Rows": 10,
+      "Plan Width": 12,
+      "Actual Startup Time": 42.599,
+      "Actual Total Time": 42.627,
+      "Actual Rows": 10,
+      "Actual Loops": 1,
+      "Group Key": [
+        "metrics.device_id"
+      ],
+      "Planned Partitions": 0,
+      "HashAgg Batches": 1,
+      "Peak Memory Usage": 24,
+      "Disk Usage": 0,
+      "Plans": [
+        {
+          "Node Type": "Custom Scan",
+          "Parent Relationship": "Outer",
+          "Custom Plan Provider": "ChunkAppend",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Relation Name": "metrics",
+          "Alias": "metrics",
+          "Startup Cost": 8.7,
+          "Total Cost": 9176.99,
+          "Plan Rows": 4802,
+          "Plan Width": 36,
+          "Actual Startup Time": 0.309,
+          "Actual Total Time": 42.316,
+          "Actual Rows": 640,
+          "Actual Loops": 1,
+          "Startup Exclusion": true,
+          "Runtime Exclusion": false,
+          "Chunks excluded during startup": 10,
+          "Plans": [
+            {
+              "Node Type": "Custom Scan",
+              "Parent Relationship": "children",
+              "Custom Plan Provider": "VectorAgg",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Startup Cost": 390.63,
+              "Total Cost": 392.63,
+              "Plan Rows": 200,
+              "Plan Width": 36,
+              "Actual Startup Time": 0.308,
+              "Actual Total Time": 1.731,
+              "Actual Rows": 30,
+              "Actual Loops": 1,
+              "Grouping Policy": "per compressed batch",
+              "Plans": [
+                {
+                  "Node Type": "Custom Scan",
+                  "Parent Relationship": "child",
+                  "Custom Plan Provider": "ColumnarScan",
+                  "Parallel Aware": false,
+                  "Async Capable": false,
+                  "Relation Name": "_hyper_1_1_chunk",
+                  "Alias": "_hyper_1_1_chunk",
+                  "Startup Cost": 8.7,
+                  "Total Cost": 260.93,
+                  "Plan Rows": 25940,
+                  "Plan Width": 12,
+                  "Actual Startup Time": 0.0,
+                  "Actual Total Time": 0.001,
+                  "Actual Rows": 25940,
+                  "Actual Loops": 1,
+                  "Vectorized Filter": "(\"time\" < (now() - '10 days'::interval))",
+                  "Rows Removed by Filter": 0,
+                  "Bulk Decompression": true,
+                  "Plans": [
+                    {
+                      "Node Type": "Seq Scan",
+                      "Parent Relationship": "child",
+                      "Parallel Aware": false,
+                      "Async Capable": false,
+                      "Relation Name": "_hyper_1_1_chunk_compressed",
+                      "Alias": "_hyper_1_1_chunk_compressed",
+                      "Startup Cost": 0.0,
+                      "Total Cost": 1.52,
+                      "Plan Rows": 30,
+                      "Plan Width": 88,
+                      "Actual Startup Time": 0.022,
+                      "Actual Total Time": 0.038,
+                      "Actual Rows": 30,
+                      "Actual Loops": 1,
+                      "Filter": "(_ts_meta_v2_last_time < (now() - '10 days'::interval))",
+                      "Rows Removed by Filter": 0
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "Node Type": "Custom Scan",
+              "Parent Relationship": "children",
+              "Custom Plan Provider": "VectorAgg",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Startup Cost": 433.53,
+              "Total Cost": 435.53,
+              "Plan Rows": 200,
+              "Plan Width": 36,
+              "Actual Startup Time": 0.235,
+              "Actual Total Time": 1.626,
+              "Actual Rows": 30,
+              "Actual Loops": 1,
+              "Grouping Policy": "per compressed batch",
+              "Plans": [
+                {
+                  "Node Type": "Custom Scan",
+                  "Parent Relationship": "child",
+                  "Custom Plan Provider": "ColumnarScan",
+                  "Parallel Aware": false,
+                  "Async Capable": false,
+                  "Relation Name": "_hyper_1_2_chunk",
+                  "Alias": "_hyper_1_2_chunk",
+                  "Startup Cost": 9.65,
+                  "Total Cost": 289.53,
+                  "Plan Rows": 28800,
+                  "Plan Width": 12,
+                  "Actual Startup Time": 0.0,
+                  "Actual Total Time": 0.001,
+                  "Actual Rows": 28800,
+                  "Actual Loops": 1,
+                  "Vectorized Filter": "(\"time\" < (now() - '10 days'::interval))",
+                  "Rows Removed by Filter": 0,
+                  "Bulk Decompression": true,
+                  "Plans": [
+                    {
+                      "Node Type": "Seq Scan",
+                      "Parent Relationship": "child",
+                      "Parallel Aware": false,
+                      "Async Capable": false,
+                      "Relation Name": "_hyper_1_2_chunk_compressed",
+                      "Alias": "_hyper_1_2_chunk_compressed",
+                      "Startup Cost": 0.0,
+                      "Total Cost": 1.52,
+                      "Plan Rows": 30,
+                      "Plan Width": 88,
+                      "Actual Startup Time": 0.022,
+                      "Actual Total Time": 0.036,
+                      "Actual Rows": 30,
+                      "Actual Loops": 1,
+                      "Filter": "(_ts_meta_v2_last_time < (now() - '10 days'::interval))",
+                      "Rows Removed by Filter": 0
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "Planning Time": 38.015,
+    "Triggers": [],
+    "Execution Time": 44.441
+  }
+]

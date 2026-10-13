@@ -9,6 +9,7 @@ export function schemaMatches(objects: SchemaObjects | null, query: string): boo
     objects.tables,
     objects.views,
     objects.materializedViews,
+    objects.continuousAggregates ?? [],
     objects.sequences,
     objects.functions,
     objects.types,
@@ -42,7 +43,12 @@ export function useTableMatches(query: string): { connectionIds: Set<string>; fi
       const schema = rest.join("/");
       connectionIds.add(connectionId);
       if (!first) {
-        const rel = [...node.objects.tables, ...node.objects.views, ...node.objects.materializedViews].find((o) =>
+        const rel = [
+          ...node.objects.tables,
+          ...node.objects.views,
+          ...node.objects.materializedViews,
+          ...(node.objects.continuousAggregates ?? []),
+        ].find((o) =>
           o.name.toLowerCase().includes(query),
         );
         if (rel) first = { connectionId, database, schema, table: rel.name, kind: rel.kind };

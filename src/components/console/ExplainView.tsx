@@ -2,83 +2,10 @@ import { useMemo, useState } from "react";
 import { AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatInt } from "@/lib/format";
+import { flatten, nodeLabel, type PlanNode, type Row } from "@/lib/explainPlan";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import type { ExplainResult } from "../../types/pg";
 import { SqlText } from "./SqlText";
-
-/** One node of EXPLAIN (FORMAT JSON), as much of it as the tree shows. */
-interface PlanNode {
-  "Node Type": string;
-  "Relation Name"?: string;
-  Schema?: string;
-  Alias?: string;
-  "Index Name"?: string;
-  "Join Type"?: string;
-  Strategy?: string;
-  "Startup Cost"?: number;
-  "Total Cost"?: number;
-  "Plan Rows"?: number;
-  "Actual Rows"?: number;
-  "Actual Loops"?: number;
-  "Actual Total Time"?: number;
-  "Rows Removed by Filter"?: number;
-  "Shared Hit Blocks"?: number;
-  "Shared Read Blocks"?: number;
-  Plans?: PlanNode[];
-  [key: string]: unknown;
-}
-
-interface Row {
-  node: PlanNode;
-  depth: number;
-  selfMs: number | null;
-  rows: number | null;
-  estimate: number | null;
-  warnings: string[];
-  details: string[];
-}
-
-const DETAIL_KEYS = [
-  "Index Cond",
-  "Recheck Cond",
-  "Filter",
-  "Hash Cond",
-  "Merge Cond",
-  "Join Filter",
-  "Sort Key",
-  "Group Key",
-  "One-Time Filter",
-  "Output",
-];
-
-function flatten(node: PlanNode, depth: number, out: Row[]) {
-  const loops = node["Actual Loops"] ?? 1;
-  const total = node["Actual Total Time"] !== undefined ? node["Actual Total Time"] * loops : null;
-  const childTotal = (node.Plans ?? []).reduce(
-    (sum, c) => sum + (c["Actual Total Time"] !== undefined ? c["Actual Total Time"] * (c["Actual Loops"] ?? 1) : 0),
-    0,
-  );
-  const rows = node["Actual Rows"] !== undefined ? node["Actual Rows"] * loops : null;
-  const estimate = node["Plan Rows"] !== undefined ? node["Plan Rows"] * (node["Actual Loops"] !== undefined ? loops : 1) : null;
-  const warnings: string[] = [];
-  if (rows !== null && estimate !== null && Math.max(rows, 1) / Math.max(estimate, 1) >= 10) {
-    warnings.push(`Planner expected ${formatInt(estimate)} rows, got ${formatInt(rows)}; ANALYZE may help`);
-  } else if (rows !== null && estimate !== null && Math.max(estimate, 1) / Math.max(rows, 1) >= 100 && estimate > 1000) {
-    warnings.push(`Planner expected ${formatInt(estimate)} rows, got ${formatInt(rows)}`);
-  }
-  const removed = node["Rows Removed by Filter"];
-  if (node["Node Type"] === "Seq Scan" && removed !== undefined && rows !== null && removed > 1000 && removed > rows * 4) {
-    warnings.push(`Reads ${formatInt(removed + rows)} rows to keep ${formatInt(rows)}: an index on the filter's columns may help`);
-  }
-  const details = DETAIL_KEYS.flatMap((k) => {
-    const v = node[k];
-    if (v === undefined || (k === "Output" && depth > 0)) return [];
-    return [`${k}: ${Array.isArray(v) ? v.join(", ") : String(v)}`];
-  });
-  if (removed) details.push(`Rows Removed by Filter: ${formatInt(removed)}`);
-  out.push({ node, depth, selfMs: total === null ? null : Math.max(0, total - childTotal), rows, estimate, warnings, details });
-  for (const child of node.Plans ?? []) flatten(child, depth + 1, out);
-}
 
 /** EXPLAIN as a tree: each node's own time, actual against estimated rows, buffers, and what to look at. */
 export function ExplainView({ explain, statement }: { explain: ExplainResult; statement?: string }) {
@@ -151,10 +78,8 @@ export function ExplainView({ explain, statement }: { explain: ExplainResult; st
                             style={{ left: r.depth * 18 - 12 }}
                           />
                         )}
-                        <span className="font-semibold text-fg">
-                          {n["Join Type"] && n["Node Type"].includes("Join") ? `${n["Join Type"]} ` : ""}
-                          {n["Node Type"]}
-                        </span>
+                        <span className="font-semibold text-fg">{nodeLabel(n)}</span>
+                        {n["Node Type"] === "Custom Scan" && <span className="text-fg-3"> custom scan</span>}
                         {n["Relation Name"] && (
                           <>
                             <span className="text-fg-3"> on </span>

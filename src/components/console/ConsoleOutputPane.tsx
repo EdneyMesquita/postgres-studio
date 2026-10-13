@@ -135,7 +135,8 @@ export function ConsoleOutputPane({ tab, session }: { tab: Tab; session: Console
             {session.error}
           </div>
         )}
-        {!ran ? (
+        {/* an EXPLAIN before anything ran still has its plan to show */}
+        {!ran && current !== "explain" ? (
           <div className="grid flex-1 place-items-center p-6 text-center text-fg-3">
             <p className="flex flex-wrap items-center justify-center gap-1.5">
               Run the statement at the caret

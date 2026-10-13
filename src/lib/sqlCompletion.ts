@@ -5,7 +5,8 @@ import { useGraphStore } from "../store/graphStore";
 import { cypherBodyAt, cypherSpot } from "./cypher";
 import { cachedProperties, cypherCandidates } from "./cypherCompletion";
 import { indexContextAt, opclassesFor, VECTOR_FUNCTIONS, VECTOR_OPERATORS } from "./pgvector";
-import type { ColumnInfo, SchemaObjects } from "../types/pg";
+import { TIMESCALE_FUNCTIONS } from "./timescale";
+import type { ColumnInfo, RelationEntry, SchemaObjects } from "../types/pg";
 
 /** The console's SQL language: PostgreSQL's, with Cypher inside cypher() calls (see studioLanguages). */
 export const SQL_LANGUAGE = "postgres-studio-sql";
@@ -137,10 +138,26 @@ function tableOf(ctx: SqlContext, written: string): { schema: string; table: str
   return schema ? { schema, table } : null;
 }
 
+/** Every relation of a schema the completion lists offer, continuous aggregates included. */
+function relationsOf(o: SchemaObjects): RelationEntry[] {
+  return [...o.tables, ...o.views, ...o.materializedViews, ...(o.continuousAggregates ?? [])];
+}
+
+function isCagg(o: SchemaObjects, t: RelationEntry): boolean {
+  return (o.continuousAggregates ?? []).includes(t);
+}
+
+/** What a relation is, as the completion list names it. */
+function relationKind(o: SchemaObjects, t: RelationEntry): string {
+  if (isCagg(o, t)) return "continuous aggregate";
+  if (t.timescale === "hypertable") return "hypertable";
+  return t.kind === "v" ? "view" : t.kind === "m" ? "materialized view" : "table";
+}
+
 function findSchema(ctx: SqlContext, table: string, schema: string | null): string | null {
   if (schema) return schema;
   const all = objectsOf(ctx);
-  const has = (o: SchemaObjects) => [...o.tables, ...o.views, ...o.materializedViews].some((t) => t.name === table);
+  const has = (o: SchemaObjects) => relationsOf(o).some((t) => t.name === table);
   return (all.find((s) => s.schema === "public" && has(s.objects)) ?? all.find((s) => has(s.objects)))?.schema ?? null;
 }
 
@@ -217,8 +234,9 @@ export function registerSqlCompletion(monaco: typeof Monaco) {
           // schema.  -> its relations
           const schema = objectsOf(ctx).find((s) => s.schema === qualifier);
           if (schema) {
-            for (const t of [...schema.objects.tables, ...schema.objects.views, ...schema.objects.materializedViews]) {
-              suggestions.push({ label: t.name, kind: t.kind === "r" || t.kind === "p" ? Kind.Struct : Kind.Interface, insertText: quoteIfNeeded(t.name), range, detail: t.kind === "v" ? "view" : "table" });
+            for (const t of relationsOf(schema.objects)) {
+              const kind = t.kind === "r" || t.kind === "p" ? Kind.Struct : Kind.Interface;
+              suggestions.push({ label: t.name, kind, insertText: quoteIfNeeded(t.name), range, detail: relationKind(schema.objects, t) });
             }
             for (const f of schema.objects.functions) {
               suggestions.push({ label: `${f.name}(${f.args})`, kind: Kind.Function, insertText: `${quoteIfNeeded(f.name)}(`, range, detail: f.returns ?? undefined });
@@ -251,13 +269,13 @@ export function registerSqlCompletion(monaco: typeof Monaco) {
           }
           for (const { schema, objects } of objectsOf(ctx)) {
             const prefix = schema === "public" ? "" : `${quoteIfNeeded(schema)}.`;
-            for (const t of [...objects.tables, ...objects.views, ...objects.materializedViews]) {
+            for (const t of relationsOf(objects)) {
               suggestions.push({
                 label: prefix + t.name,
-                kind: t.kind === "v" ? Kind.Interface : Kind.Struct,
+                kind: t.kind === "v" || isCagg(objects, t) ? Kind.Interface : Kind.Struct,
                 insertText: prefix + quoteIfNeeded(t.name),
                 range,
-                detail: `${schema} · ${t.kind === "v" ? "view" : t.kind === "m" ? "materialized view" : "table"}`,
+                detail: `${schema} · ${relationKind(objects, t)}`,
                 sortText: `1${t.name}`,
               });
             }
@@ -272,6 +290,11 @@ export function registerSqlCompletion(monaco: typeof Monaco) {
         for (const k of KEYWORDS) suggestions.push({ label: k, kind: Kind.Keyword, insertText: k, range, sortText: `5${k}` });
         if (catalog?.vector) {
           for (const f of VECTOR_FUNCTIONS) {
+            suggestions.push({ label: f.name, kind: Kind.Function, insertText: `${f.name}(`, range, detail: f.detail, sortText: `6${f.name}` });
+          }
+        }
+        if (catalog?.timescale) {
+          for (const f of TIMESCALE_FUNCTIONS) {
             suggestions.push({ label: f.name, kind: Kind.Function, insertText: `${f.name}(`, range, detail: f.detail, sortText: `6${f.name}` });
           }
         }

@@ -13,6 +13,8 @@ pub mod graph;
 pub mod objects;
 pub mod run;
 pub mod split;
+pub mod timescale;
+pub mod timescale_actions;
 mod tls;
 
 pub use connect::{PgClient, PgSession};

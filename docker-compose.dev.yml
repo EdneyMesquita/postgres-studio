@@ -15,3 +15,15 @@ services:
     volumes:
       - ./scripts/seed-dev.sql:/docker-entrypoint-initdb.d/10-shop.sql:ro
       - ./scripts/seed-dev-analytics.sql:/docker-entrypoint-initdb.d/20-analytics.sql:ro
+  # TimescaleDB for the native Timescale support and its #[ignore]d tests, on port 5436.
+  timescale:
+    image: timescale/timescaledb:latest-pg17
+    container_name: postgres-studio-timescale
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: tsdb
+    ports:
+      - "127.0.0.1:5436:5432"
+    volumes:
+      - ./scripts/seed-dev-timescale.sql:/docker-entrypoint-initdb.d/10-tsdb.sql:ro

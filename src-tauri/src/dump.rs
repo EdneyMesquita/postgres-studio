@@ -22,7 +22,7 @@ use crate::error::{AppError, AppResult};
 use crate::logging::Op;
 use crate::models::SslMode;
 use crate::pg::connect::Target;
-use crate::pg::qualified;
+use crate::pg::{qualified, PgSession};
 use crate::state::{AppState, CancelToken, RunningTask};
 
 pub const DUMP_EVENT: &str = "dump-progress";
@@ -646,6 +646,92 @@ pub fn detect_format(path: &Path) -> AppResult<BackupFormat> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// TimescaleDB in a backup
+// ---------------------------------------------------------------------------
+
+/// Whether a `pg_restore -l` line is the TimescaleDB extension's entry. The
+/// name is matched whole: `timescaledb_toolkit` is another extension.
+pub fn toc_line_is_timescale(line: &str) -> bool {
+    line.split_once("EXTENSION - ")
+        .and_then(|(_, rest)| rest.split_whitespace().next())
+        == Some("timescaledb")
+}
+
+/// Whether a line of a SQL script creates the TimescaleDB extension.
+pub fn sql_line_creates_timescale(line: &str) -> bool {
+    let lower = line.trim_start().to_ascii_lowercase();
+    let Some(rest) = lower.strip_prefix("create extension ") else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    let rest = rest
+        .strip_prefix("if not exists ")
+        .unwrap_or(rest)
+        .trim_start();
+    rest.split(|c: char| c.is_whitespace() || c == ';').next() == Some("timescaledb")
+}
+
+/// Whether a custom, tar or directory backup holds the extension, from its
+/// table of contents. Only the file is read, not the server.
+async fn archive_has_timescale(tool: &PgTool, source: &Path) -> AppResult<bool> {
+    let mut command = Command::new(&tool.path);
+    command
+        .arg("-l")
+        .arg("--")
+        .arg(source)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    hide_window(&mut command);
+    let output = command
+        .output()
+        .await
+        .map_err(|e| AppError::Tool(format!("Couldn't start pg_restore: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(AppError::Tool(if stderr.is_empty() {
+            "pg_restore couldn't read this backup.".to_string()
+        } else {
+            clip(&stderr)
+        }));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .any(toc_line_is_timescale))
+}
+
+/// Whether a SQL script creates the extension. It is read a line at a time,
+/// so a large dump is never held in memory, and reading stops at the first match.
+async fn sql_has_timescale(source: &Path) -> AppResult<bool> {
+    let mut reader = BufReader::new(tokio::fs::File::open(source).await?);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        if reader.read_until(b'\n', &mut buf).await? == 0 {
+            return Ok(false);
+        }
+        if sql_line_creates_timescale(&String::from_utf8_lossy(&buf)) {
+            return Ok(true);
+        }
+    }
+}
+
+/// Whether the backup holds TimescaleDB. `tool` is `pg_restore` for every
+/// format but plain, where it is `psql` and unused.
+async fn backup_has_timescale(
+    tool: &PgTool,
+    format: BackupFormat,
+    source: &Path,
+) -> AppResult<bool> {
+    if format == BackupFormat::Plain {
+        sql_has_timescale(source).await
+    } else {
+        archive_has_timescale(tool, source).await
+    }
+}
+
 /// Bytes in a file, or in all the files of a folder.
 fn size_of(path: &Path) -> u64 {
     match std::fs::metadata(path) {
@@ -910,16 +996,20 @@ pub async fn run_dump(
     })
 }
 
+/// Runs the restore of `source` into `database`. A backup that holds
+/// TimescaleDB is restored between the extension's pre- and post-restore
+/// calls: they stop its background workers, so they can't interfere with
+/// the restore of hypertables and continuous aggregates.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_restore(
     tool: &PgTool,
     format: BackupFormat,
-    conn: &PgConn,
+    session: &PgSession,
     database: &str,
     source: &Path,
     options: &RestoreOptions,
     cancel: &CancelToken,
-    on_line: impl FnMut(&str, u64),
+    mut on_line: impl FnMut(&str, u64),
 ) -> AppResult<RestoreSummary> {
     let plain = format == BackupFormat::Plain;
     let (args, kind, name) = if plain {
@@ -953,9 +1043,75 @@ pub async fn run_restore(
             ));
         }
     }
-    let env = conn.env(database, tool.major);
+    let timescale = backup_has_timescale(tool, format, source).await?;
+    if timescale && options.create {
+        // pg_restore makes the database during the restore, too late for the
+        // extension to be prepared in it.
+        let line = "TimescaleDB: this backup holds the extension, but \"Create the database\" \
+                    makes the database during the restore. Create the database first and \
+                    restore into it, so hypertables and continuous aggregates restore fully.";
+        on_line(line, 0);
+        notes.push(line.to_string());
+    }
+    // The same connection runs the post-restore call: pre-restore sets its
+    // settings on the connection it runs on.
+    let mut guard = None;
+    if timescale && !options.create {
+        let client = session.client(database).await?;
+        client
+            .client
+            .batch_execute("CREATE EXTENSION IF NOT EXISTS timescaledb")
+            .await
+            .map_err(|e| {
+                AppError::Tool(format!(
+                    "Couldn't create the TimescaleDB extension in {database}, so the restore \
+                     didn't start: {e}. The server must load TimescaleDB at start \
+                     (shared_preload_libraries)."
+                ))
+            })?;
+        client
+            .client
+            .batch_execute("SELECT timescaledb_pre_restore()")
+            .await
+            .map_err(|e| {
+                AppError::Tool(format!(
+                    "Couldn't prepare {database} for the TimescaleDB restore, so the restore \
+                     didn't start: {e}"
+                ))
+            })?;
+        on_line(
+            "TimescaleDB: ran timescaledb_pre_restore(); background jobs are paused.",
+            0,
+        );
+        guard = Some(client);
+    }
+    let env = PgConn::from_target(&session.target).env(database, tool.major);
     let started = Instant::now();
-    let done = run_tool(&tool.path, &args, &env, kind, cancel, on_line).await?;
+    let outcome = run_tool(&tool.path, &args, &env, kind, cancel, &mut on_line).await;
+    if let Some(client) = guard {
+        // However the restore ended, the database must leave restore mode. A
+        // failure here is reported only when the restore itself succeeded.
+        match client
+            .client
+            .batch_execute("SELECT timescaledb_post_restore()")
+            .await
+        {
+            Ok(()) => on_line(
+                "TimescaleDB: ran timescaledb_post_restore(); background jobs are back on.",
+                0,
+            ),
+            Err(e) if outcome.is_ok() => {
+                return Err(AppError::Tool(format!(
+                    "The restore finished, but TimescaleDB couldn't leave restore mode in \
+                     {database}: {e}"
+                )))
+            }
+            Err(_) => {
+                log::warn!("TimescaleDB post-restore failed after a restore that also failed")
+            }
+        }
+    }
+    let done = outcome?;
     if !done.success() && !done.errors_ignored {
         return Err(done.failure(name));
     }
@@ -1131,7 +1287,6 @@ pub async fn restore_database<R: Runtime>(
         ("pg_restore", tools.pg_restore.first())
     };
     let tool = found.1.ok_or_else(|| missing_tool(found.0))?;
-    let conn = PgConn::from_target(&session.target);
 
     let token = track(&state, &execution_id);
     let events = app.clone();
@@ -1140,7 +1295,7 @@ pub async fn restore_database<R: Runtime>(
     let result = run_restore(
         tool,
         format,
-        &conn,
+        &session,
         &database,
         source,
         &options,
@@ -1576,6 +1731,97 @@ mod tests {
         assert!(counts_as_object(ToolKind::Psql, "CREATE TABLE"));
     }
 
+    #[test]
+    fn the_toc_names_the_timescale_extension_whole() {
+        assert!(toc_line_is_timescale(
+            "3212; 0 16386 EXTENSION - timescaledb "
+        ));
+        assert!(toc_line_is_timescale(
+            "3212; 0 16386 EXTENSION - timescaledb"
+        ));
+        assert!(!toc_line_is_timescale(
+            "3213; 0 16390 EXTENSION - timescaledb_toolkit"
+        ));
+        assert!(!toc_line_is_timescale("3214; 0 16391 EXTENSION - pgcrypto"));
+        assert!(!toc_line_is_timescale(
+            "3215; 0 0 COMMENT - EXTENSION timescaledb"
+        ));
+        assert!(!toc_line_is_timescale(
+            "3216; 0 16392 TABLE public.timescaledb_notes"
+        ));
+    }
+
+    #[test]
+    fn the_sql_names_the_timescale_extension_whole() {
+        assert!(sql_line_creates_timescale(
+            "CREATE EXTENSION IF NOT EXISTS timescaledb WITH SCHEMA public;"
+        ));
+        assert!(sql_line_creates_timescale("CREATE EXTENSION timescaledb;"));
+        assert!(sql_line_creates_timescale(
+            "  create extension if not exists timescaledb;"
+        ));
+        assert!(!sql_line_creates_timescale(
+            "CREATE EXTENSION IF NOT EXISTS timescaledb_toolkit WITH SCHEMA public;"
+        ));
+        assert!(!sql_line_creates_timescale(
+            "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+        ));
+        assert!(!sql_line_creates_timescale(
+            "-- CREATE EXTENSION timescaledb;"
+        ));
+        assert!(!sql_line_creates_timescale(
+            "COMMENT ON EXTENSION timescaledb IS 'time-series';"
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_plain_backup_is_checked_for_the_extension() {
+        let dir = std::env::temp_dir().join(format!("ps-ts-sql-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let with = dir.join("with.sql");
+        std::fs::write(
+            &with,
+            "--\n-- PostgreSQL database dump\n--\nCREATE EXTENSION IF NOT EXISTS timescaledb WITH SCHEMA public;\nCOPY public.t (a) FROM stdin;\n1\n\\.\n",
+        )
+        .unwrap();
+        let without = dir.join("without.sql");
+        std::fs::write(
+            &without,
+            "CREATE TABLE t (a int);\nCOPY t (a) FROM stdin;\n1\n\\.\n",
+        )
+        .unwrap();
+        assert!(sql_has_timescale(&with).await.unwrap());
+        assert!(!sql_has_timescale(&without).await.unwrap());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timescale_warnings_are_neither_objects_nor_errors() {
+        // pg_dump's note about circular foreign keys between a hypertable and
+        // its chunks, with the lines that follow it.
+        let script = "echo 'pg_dump: warning: there are circular foreign-key constraints on this table: hypertable' >&2; \
+                      echo 'pg_dump: detail: Hypertables cannot be dumped in parallel.' >&2; \
+                      echo 'pg_dump: hint: You might not be able to restore the dump without using --disable-triggers or temporarily dropping the constraints.' >&2; \
+                      exit 0";
+        let cancel = CancelToken::default();
+        let mut last_objects = u64::MAX;
+        let done = run_tool(
+            "sh",
+            &["-c".to_string(), script.to_string()],
+            &[],
+            ToolKind::Dump,
+            &cancel,
+            |_, n| last_objects = n,
+        )
+        .await
+        .unwrap();
+        assert!(done.success());
+        assert_eq!(done.warnings.len(), 1);
+        assert!(done.errors.is_empty());
+        assert_eq!(last_objects, 0);
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn a_tool_that_fails_reports_its_last_lines() {
@@ -1654,7 +1900,12 @@ mod live_tests {
     const SCRATCH: &str = "agent_dump_restore";
 
     async fn session() -> PgSession {
-        let uri = std::env::var("POSTGRES_STUDIO_TEST_URI").expect("set POSTGRES_STUDIO_TEST_URI");
+        session_from("POSTGRES_STUDIO_TEST_URI").await
+    }
+
+    /// The server whose URI is in the variable `var`.
+    async fn session_from(var: &str) -> PgSession {
+        let uri = std::env::var(var).unwrap_or_else(|_| panic!("set {var}"));
         let profile = ConnectionProfile {
             id: "live".into(),
             name: "live".into(),
@@ -1769,7 +2020,7 @@ mod live_tests {
             run_restore(
                 tool,
                 format,
-                &conn,
+                &session,
                 SCRATCH,
                 &dest,
                 &options,
@@ -1788,6 +2039,123 @@ mod live_tests {
         admin
             .client
             .batch_execute(&format!("DROP DATABASE IF EXISTS {SCRATCH} WITH (FORCE)"))
+            .await
+            .unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The TimescaleDB server's `tsdb`, backed up and restored into a database
+    /// of its own, as the app does it. Needs pg_dump and pg_restore no older
+    /// than the server.
+    #[tokio::test]
+    #[ignore = "needs POSTGRES_STUDIO_TIMESCALE_URI"]
+    async fn restores_a_timescale_backup() {
+        let session = session_from("POSTGRES_STUDIO_TIMESCALE_URI").await;
+        let tools = find_tools().await;
+        let (Some(dump), Some(restore)) = (tools.pg_dump.first(), tools.pg_restore.first()) else {
+            eprintln!("skipped: pg_dump and pg_restore weren't both found");
+            return;
+        };
+        for tool in [dump, restore] {
+            if let Err(e) = check_dump_version(tool, session.server_version.as_deref()) {
+                eprintln!("skipped: {e}");
+                return;
+            }
+        }
+
+        let source = "tsdb";
+        let target = "ts_restore_test";
+        // What the restore has to bring back, as one value.
+        let counts = "SELECT concat_ws(',',
+            (SELECT count(*) FROM timescaledb_information.hypertables),
+            (SELECT count(*) FROM timescaledb_information.continuous_aggregates),
+            (SELECT count(*) FROM timescaledb_information.chunks))";
+        let expected = scalar(&session, source, counts).await.unwrap();
+        assert!(
+            !expected.starts_with("0,"),
+            "{source} has no hypertables: {expected}"
+        );
+
+        let dir = std::env::temp_dir().join(format!("ps-ts-live-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("tsdb.dump");
+        let cancel = CancelToken::default();
+        let conn = PgConn::from_target(&session.target);
+        run_dump(
+            dump,
+            &conn,
+            source,
+            &dump_options_for(BackupFormat::Custom),
+            &dest,
+            &cancel,
+            |_, _| {},
+        )
+        .await
+        .unwrap_or_else(|e| panic!("dump failed: {e}"));
+
+        let admin = session.target.open("postgres").await.unwrap();
+        for sql in [
+            format!("DROP DATABASE IF EXISTS {target} WITH (FORCE)"),
+            format!("CREATE DATABASE {target}"),
+        ] {
+            admin.client.batch_execute(&sql).await.unwrap();
+        }
+
+        let mut lines = Vec::new();
+        let options = RestoreOptions {
+            no_owner: true,
+            ..Default::default()
+        };
+        let summary = run_restore(
+            restore,
+            BackupFormat::Custom,
+            &session,
+            target,
+            &dest,
+            &options,
+            &cancel,
+            |line, _| lines.push(line.to_string()),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("restore failed: {e}"));
+        assert!(
+            summary.errors.is_empty(),
+            "statements failed: {:?}",
+            summary.errors
+        );
+        for step in ["timescaledb_pre_restore", "timescaledb_post_restore"] {
+            assert!(
+                lines.iter().any(|l| l.contains(step)),
+                "no {step} line in {lines:?}"
+            );
+        }
+
+        let restored = scalar(&session, target, counts).await.unwrap();
+        assert_eq!(restored, expected, "hypertables, caggs and chunks");
+        // a new connection: the restoring setting is per database, and
+        // post-restore must have cleared it
+        let flag = scalar(
+            &session,
+            target,
+            "SELECT coalesce(current_setting('timescaledb.restoring', true), 'off')",
+        )
+        .await
+        .unwrap();
+        assert_ne!(flag, "on", "timescaledb.restoring is still on");
+        let left = scalar(
+            &session,
+            target,
+            "SELECT count(*) FROM pg_db_role_setting s
+             JOIN pg_database d ON d.oid = s.setdatabase
+             WHERE d.datname = current_database() AND s.setconfig::text LIKE '%timescaledb.restoring%'",
+        )
+        .await
+        .unwrap();
+        assert_eq!(left, "0", "a restoring setting is left on the database");
+
+        admin
+            .client
+            .batch_execute(&format!("DROP DATABASE IF EXISTS {target} WITH (FORCE)"))
             .await
             .unwrap();
         std::fs::remove_dir_all(&dir).unwrap();

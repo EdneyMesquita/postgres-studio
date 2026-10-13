@@ -1,0 +1,97 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Custom Scan",
+      "Custom Plan Provider": "ConstraintAwareAppend",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Startup Cost": 0.29,
+      "Total Cost": 1794.58,
+      "Plan Rows": 57571,
+      "Plan Width": 28,
+      "Actual Startup Time": 0.052,
+      "Actual Total Time": 13.099,
+      "Actual Rows": 57570,
+      "Actual Loops": 1,
+      "Hypertable": "metrics",
+      "Chunks excluded during startup": 1,
+      "Plans": [
+        {
+          "Node Type": "Append",
+          "Parent Relationship": "child",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Startup Cost": 0.29,
+          "Total Cost": 1794.58,
+          "Plan Rows": 57571,
+          "Plan Width": 28,
+          "Actual Startup Time": 0.052,
+          "Actual Total Time": 10.342,
+          "Actual Rows": 57570,
+          "Actual Loops": 1,
+          "Subplans Removed": 0,
+          "Plans": [
+            {
+              "Node Type": "Seq Scan",
+              "Parent Relationship": "Member",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Relation Name": "_hyper_1_30_chunk",
+              "Alias": "_hyper_1_30_chunk",
+              "Startup Cost": 0.00,
+              "Total Cost": 716.00,
+              "Plan Rows": 25900,
+              "Plan Width": 28,
+              "Actual Startup Time": 0.051,
+              "Actual Total Time": 3.689,
+              "Actual Rows": 25900,
+              "Actual Loops": 1,
+              "Filter": "(\"time\" > (now() - '2 days'::interval))",
+              "Rows Removed by Filter": 2900
+            },
+            {
+              "Node Type": "Seq Scan",
+              "Parent Relationship": "Member",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Relation Name": "_hyper_1_31_chunk",
+              "Alias": "_hyper_1_31_chunk",
+              "Startup Cost": 0.00,
+              "Total Cost": 716.00,
+              "Plan Rows": 28800,
+              "Plan Width": 28,
+              "Actual Startup Time": 0.049,
+              "Actual Total Time": 3.647,
+              "Actual Rows": 28800,
+              "Actual Loops": 1,
+              "Filter": "(\"time\" > (now() - '2 days'::interval))",
+              "Rows Removed by Filter": 0
+            },
+            {
+              "Node Type": "Seq Scan",
+              "Parent Relationship": "Member",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Relation Name": "_hyper_1_32_chunk",
+              "Alias": "_hyper_1_32_chunk",
+              "Startup Cost": 0.00,
+              "Total Cost": 72.22,
+              "Plan Rows": 2870,
+              "Plan Width": 28,
+              "Actual Startup Time": 0.032,
+              "Actual Total Time": 0.356,
+              "Actual Rows": 2870,
+              "Actual Loops": 1,
+              "Filter": "(\"time\" > (now() - '2 days'::interval))",
+              "Rows Removed by Filter": 0
+            }
+          ]
+        }
+      ]
+    },
+    "Planning Time": 6.106,
+    "Triggers": [
+    ],
+    "Execution Time": 14.571
+  }
+]

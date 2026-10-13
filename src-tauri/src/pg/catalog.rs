@@ -96,6 +96,13 @@ pub struct RelationEntry {
     pub kind: String,
     pub row_estimate: Option<i64>,
     pub comment: Option<String>,
+    /// `hypertable` or `cagg` on a database with TimescaleDB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timescale: Option<String>,
+    /// A hypertable's or cagg's size on disk, its chunks included: the
+    /// parent table itself is empty, so its row estimate says nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,9 +131,24 @@ pub struct SchemaObjects {
     pub tables: Vec<RelationEntry>,
     pub views: Vec<RelationEntry>,
     pub materialized_views: Vec<RelationEntry>,
+    /// TimescaleDB continuous aggregates: views to the catalog, moved out
+    /// of `views`.
+    #[serde(default)]
+    pub continuous_aggregates: Vec<RelationEntry>,
     pub sequences: Vec<RelationEntry>,
     pub functions: Vec<FunctionEntry>,
     pub types: Vec<TypeEntry>,
+}
+
+/// A catalog read with whether TimescaleDB is installed, asked in the same
+/// statement: these run on every expand and table open, and a separate
+/// probe would cost a round trip each time on databases that never had it.
+#[derive(Deserialize)]
+struct WithTimescale<T> {
+    #[serde(default)]
+    timescale: bool,
+    #[serde(flatten)]
+    inner: T,
 }
 
 pub async fn list_schema_objects(client: &PgClient, schema: &str) -> AppResult<SchemaObjects> {
@@ -148,6 +170,7 @@ pub async fn list_schema_objects(client: &PgClient, schema: &str) -> AppResult<S
     };
     let sql = format!(
         "SELECT json_build_object(
+            'timescale', EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb'),
             'tables', {tables},
             'views', {views},
             'materializedViews', {matviews},
@@ -174,9 +197,14 @@ pub async fn list_schema_objects(client: &PgClient, schema: &str) -> AppResult<S
         type_ext = not_extension("pg_type", "t.oid"),
         schema = literal(schema),
     );
-    json_query(client, &sql)
+    let read: WithTimescale<SchemaObjects> = json_query(client, &sql)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("schema {schema}")))
+        .ok_or_else(|| AppError::NotFound(format!("schema {schema}")))?;
+    let mut objects = read.inner;
+    if read.timescale {
+        super::timescale::annotate_schema_objects(client, schema, &mut objects).await?;
+    }
+    Ok(objects)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -318,6 +346,13 @@ pub struct TableInfo {
     pub row_key: Vec<String>,
     #[serde(default)]
     pub ddl: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hypertable: Option<super::timescale::HypertableSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cagg: Option<super::timescale::CaggSummary>,
+    /// Set when the relation is a chunk of a hypertable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunk: Option<super::timescale::ChunkParent>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -426,6 +461,7 @@ pub async fn describe_table(client: &PgClient, schema: &str, table: &str) -> App
             WHERE n.nspname = {schema} AND c.relname = {table}
          )
          SELECT json_build_object(
+            'timescale', EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb'),
             'schema', t.nspname, 'name', t.relname, 'kind', t.relkind,
             'rowEstimate', CASE WHEN t.reltuples < 0 THEN NULL ELSE t.reltuples::bigint END,
             'sizeBytes', pg_total_relation_size(t.oid),
@@ -513,11 +549,17 @@ pub async fn describe_table(client: &PgClient, schema: &str, table: &str) -> App
         in_cols = cols_of("con.conkey", "con.conrelid"),
         in_ref_cols = cols_of("con.confkey", "con.confrelid"),
     );
-    let mut info: TableInfo = json_query(client, &sql)
+    let read: WithTimescale<TableInfo> = json_query(client, &sql)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("table {schema}.{table}")))?;
+    let mut info = read.inner;
     info.row_key = row_key(&info);
     info.ddl = ddl(&info);
+    if read.timescale {
+        if let Some(ts) = super::timescale::probe(client).await? {
+            super::timescale::annotate_table(client, &mut info, &ts).await?;
+        }
+    }
     Ok(info)
 }
 
@@ -760,6 +802,9 @@ mod tests {
             stats: None,
             row_key: vec![],
             ddl: String::new(),
+            hypertable: None,
+            cagg: None,
+            chunk: None,
         }
     }
 

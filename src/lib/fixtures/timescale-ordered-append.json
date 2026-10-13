@@ -1,0 +1,75 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Limit",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Startup Cost": 1.10,
+      "Total Cost": 1.12,
+      "Plan Rows": 1,
+      "Plan Width": 28,
+      "Actual Startup Time": 1.300,
+      "Actual Total Time": 1.302,
+      "Actual Rows": 10,
+      "Actual Loops": 1,
+      "Plans": [
+        {
+          "Node Type": "Custom Scan",
+          "Parent Relationship": "Outer",
+          "Custom Plan Provider": "DeferredChunkAppend",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Relation Name": "metrics",
+          "Alias": "metrics",
+          "Startup Cost": 1.10,
+          "Total Cost": 1.12,
+          "Plan Rows": 1,
+          "Plan Width": 28,
+          "Actual Startup Time": 1.298,
+          "Actual Total Time": 1.299,
+          "Actual Rows": 10,
+          "Actual Loops": 1,
+          "Order": ["\"time\" DESC"],
+          "Chunks Visited": 1,
+          "Plan": {
+            "Node Type": "Limit",
+            "Parallel Aware": false,
+            "Async Capable": false,
+            "Startup Cost": 0.28,
+            "Total Cost": 0.54,
+            "Plan Rows": 10,
+            "Plan Width": 28,
+            "Actual Startup Time": 0.069,
+            "Actual Total Time": 0.097,
+            "Actual Rows": 10,
+            "Actual Loops": 1,
+            "Plans": [
+              {
+                "Node Type": "Index Scan",
+                "Parent Relationship": "Outer",
+                "Parallel Aware": false,
+                "Async Capable": false,
+                "Scan Direction": "Forward",
+                "Index Name": "_hyper_1_32_chunk_metrics_time_idx",
+                "Relation Name": "_hyper_1_32_chunk",
+                "Alias": "_hyper_1_32_chunk",
+                "Startup Cost": 0.28,
+                "Total Cost": 75.21,
+                "Plan Rows": 2870,
+                "Plan Width": 28,
+                "Actual Startup Time": 0.069,
+                "Actual Total Time": 0.096,
+                "Actual Rows": 10,
+                "Actual Loops": 1
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "Planning Time": 3.288,
+    "Triggers": [
+    ],
+    "Execution Time": 1.461
+  }
+]

@@ -1,4 +1,4 @@
-import { Activity, Copy, DatabaseBackup, DatabaseZap, FileCode, FileUp, FolderPlus, ListTree, Pencil, Plug, Puzzle, RefreshCw, SquareTerminal, Table, Trash2, Unplug, Upload, Users, Workflow, Wrench } from "lucide-react";
+import { Activity, ChartGantt, Copy, DatabaseBackup, DatabaseZap, FileCode, FileUp, FolderPlus, ListTree, Pencil, Plug, Puzzle, RefreshCcw, RefreshCw, SquareTerminal, Table, Trash2, Unplug, Upload, Users, Workflow, Wrench } from "lucide-react";
 import { toast } from "sonner";
 import type { MenuEntry } from "@/components/common/ActionMenu";
 import { GENERATE_LABEL, MAINTENANCE_LABEL, generatableFor, maintenanceFor } from "@/lib/tableActions";
@@ -134,6 +134,25 @@ interface RelationMenu {
   /** Tables only: load a CSV file into it; disabled on a read-only connection. */
   onImportCsv?: () => void;
   importDisabled?: boolean;
+  /** With TimescaleDB installed: the entries for a table, hypertable or continuous aggregate. */
+  timescale?: TimescaleMenu;
+}
+
+export interface TimescaleMenu {
+  /** A plain table gets only the conversion; the rest are for hypertables and caggs. */
+  role: "plain" | "hypertable" | "cagg";
+  /** Continuous aggregates and policies are Community edition only. */
+  community: boolean;
+  /** Why refreshing can't run here, or null; the entry shows it. */
+  blocked: string | null;
+  onConvert: () => void;
+  onRetention: () => void;
+  onColumnstore: () => void;
+  onNewCagg: () => void;
+  onRefresh: () => void;
+  onRefreshRange: () => void;
+  onRefreshPolicy: () => void;
+  onJobs: () => void;
 }
 
 export function relationMenuEntries(m: RelationMenu): MenuEntry[] {
@@ -153,6 +172,7 @@ export function relationMenuEntries(m: RelationMenu): MenuEntry[] {
     { label: "Show DDL in a console", icon: FileCode, onSelect: m.onShowDefinition },
     ...(m.onDiagram ? [{ label: "Show in schema diagram", icon: Workflow, onSelect: m.onDiagram }] : []),
     ...tableToolsEntries(m),
+    ...timescaleEntries(m),
     ...(m.onImportCsv
       ? [{ label: "Import CSV...", icon: Upload, disabled: m.importDisabled, onSelect: m.onImportCsv }]
       : []),
@@ -189,6 +209,38 @@ function tableToolsEntries(m: RelationMenu): MenuEntry[] {
     });
   }
   return entries;
+}
+
+/** The TimescaleDB entries: the conversion for a plain table, a submenu for hypertables and caggs. */
+function timescaleEntries(m: RelationMenu): MenuEntry[] {
+  const t = m.timescale;
+  if (!t) return [];
+  if (t.role === "plain") {
+    return [{ separator: true }, { label: "Convert to hypertable…", icon: ChartGantt, onSelect: t.onConvert }];
+  }
+  const entries: MenuEntry[] = [];
+  if (t.role === "hypertable") {
+    if (t.community) {
+      entries.push(
+        { label: "Add retention policy…", onSelect: t.onRetention },
+        { label: "Add columnstore policy…", onSelect: t.onColumnstore },
+        { label: "New continuous aggregate…", onSelect: t.onNewCagg },
+      );
+    }
+  } else {
+    entries.push(
+      {
+        label: t.blocked ? `Refresh everything: ${t.blocked}` : "Refresh everything",
+        icon: RefreshCcw,
+        disabled: t.blocked !== null,
+        onSelect: t.onRefresh,
+      },
+      { label: "Refresh range…", onSelect: t.onRefreshRange },
+    );
+    if (t.community) entries.push({ label: "Add refresh policy…", onSelect: t.onRefreshPolicy });
+  }
+  entries.push({ label: "Show jobs", icon: Activity, onSelect: t.onJobs });
+  return [{ separator: true }, { submenu: "TimescaleDB", icon: ChartGantt, entries }];
 }
 
 interface FunctionMenu {

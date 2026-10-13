@@ -18,6 +18,7 @@ mod secrets;
 mod sidebar_layout;
 mod ssh_tunnel;
 mod state;
+mod timescale_commands;
 mod window_size;
 
 use tauri::Manager;
@@ -92,6 +93,13 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
         object_commands::signal_backend,
         object_commands::list_roles,
         object_commands::run_maintenance,
+        timescale_commands::timescale_info,
+        timescale_commands::timescale_hypertable,
+        timescale_commands::timescale_cagg,
+        timescale_commands::timescale_jobs,
+        timescale_commands::timescale_drop_chunks_preview,
+        timescale_commands::timescale_action_sql,
+        timescale_commands::timescale_action,
         script_file::run_sql_file,
         script_file::sql_file_info,
         csv_import::preview_csv,

@@ -23,7 +23,7 @@ export interface SchemaNode {
   objects: SchemaObjects | null;
 }
 
-export type ObjectGroup = "tables" | "views" | "materializedViews" | "functions" | "sequences" | "types";
+export type ObjectGroup = "tables" | "views" | "materializedViews" | "continuousAggregates" | "functions" | "sequences" | "types";
 
 export const databaseKey = (connectionId: string, database: string) => `${connectionId}/${database}`;
 export const schemaKey = (connectionId: string, database: string, schema: string) =>

@@ -1,4 +1,5 @@
 /** What the backend reads from PostgreSQL. Values are always text, as psql shows them. */
+import type { CaggSummary, ChunkParent, HypertableSummary, TimescaleInfo } from "./timescale";
 
 export interface DatabaseInfo {
   name: string;
@@ -24,6 +25,10 @@ export interface RelationEntry {
   kind: RelKind;
   rowEstimate: number | null;
   comment: string | null;
+  /** On a database with TimescaleDB. */
+  timescale?: "hypertable" | "cagg";
+  /** A hypertable's or cagg's size with its chunks; the parent itself is empty. */
+  sizeBytes?: number;
 }
 
 export interface FunctionEntry {
@@ -45,6 +50,8 @@ export interface SchemaObjects {
   tables: RelationEntry[];
   views: RelationEntry[];
   materializedViews: RelationEntry[];
+  /** TimescaleDB continuous aggregates, moved out of `views`. */
+  continuousAggregates: RelationEntry[];
   sequences: RelationEntry[];
   functions: FunctionEntry[];
   types: TypeEntry[];
@@ -144,6 +151,10 @@ export interface TableInfo {
   /** The columns that identify a row; empty means read-only. */
   rowKey: string[];
   ddl: string;
+  hypertable?: HypertableSummary;
+  cagg?: CaggSummary;
+  /** Set when the relation is a chunk of a hypertable. */
+  chunk?: ChunkParent;
 }
 
 export interface ResultColumn {
@@ -380,6 +391,8 @@ export interface GraphCatalog {
   vector: boolean;
   graphs: GraphInfo[];
   propertyGraphs: PropertyGraphInfo[];
+  /** TimescaleDB, when installed. */
+  timescale: TimescaleInfo | null;
 }
 
 export interface ScriptOptions {

@@ -8,6 +8,10 @@ export interface ConfirmOptions {
   cancelLabel?: string;
   /** Destructive: the confirming button turns red and Cancel takes the focus. */
   danger?: boolean;
+  /** The statement that will run, shown under the message. */
+  sql?: string;
+  /** The confirming button stays disabled until this exact text is typed. */
+  typeToConfirm?: string;
 }
 
 interface Pending extends ConfirmOptions {

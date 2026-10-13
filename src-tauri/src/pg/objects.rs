@@ -79,19 +79,33 @@ pub fn extension_sql(name: &str, action: &ExtensionAction) -> String {
     }
 }
 
+/// Whether an action runs on a connection of its own. TimescaleDB's update
+/// has to be the first statement of a session: a connection that has run
+/// anything else already has the old version's library loaded.
+pub fn needs_own_session(name: &str, action: &ExtensionAction) -> bool {
+    name == "timescaledb" && matches!(action, ExtensionAction::Update)
+}
+
 pub async fn run_extension_action(
-    client: &PgClient,
+    session: &PgSession,
+    database: &str,
     name: &str,
     action: &ExtensionAction,
 ) -> AppResult<()> {
     if name.trim().is_empty() {
         return Err(AppError::InvalidInput("extension name missing".to_string()));
     }
-    client
-        .client
-        .batch_execute(&extension_sql(name, action))
-        .await?;
-    Ok(())
+    let sql = extension_sql(name, action);
+    if !needs_own_session(name, action) {
+        let client = session.client(database).await?;
+        client.client.batch_execute(&sql).await?;
+        return Ok(());
+    }
+    let key = format!("extension:{}", uuid::Uuid::new_v4());
+    let client = session.pinned(&key, database).await?;
+    let result = client.client.batch_execute(&sql).await;
+    session.release(&key).await;
+    Ok(result?)
 }
 
 /// A role of the server, as `pg_roles` describes it.
@@ -227,6 +241,24 @@ mod tests {
             extension_sql("citext", &ExtensionAction::Drop { cascade: false }),
             "DROP EXTENSION \"citext\""
         );
+    }
+
+    #[test]
+    fn only_the_timescale_update_gets_a_session_of_its_own() {
+        assert!(needs_own_session("timescaledb", &ExtensionAction::Update));
+        assert!(!needs_own_session(
+            "timescaledb",
+            &ExtensionAction::Install { schema: None }
+        ));
+        assert!(!needs_own_session(
+            "timescaledb",
+            &ExtensionAction::Drop { cascade: false }
+        ));
+        assert!(!needs_own_session("pg_trgm", &ExtensionAction::Update));
+        assert!(!needs_own_session(
+            "timescaledb_toolkit",
+            &ExtensionAction::Update
+        ));
     }
 }
 
@@ -387,9 +419,13 @@ mod live_tests {
         let install = ExtensionAction::Install {
             schema: Some("agent_objects_ext".to_string()),
         };
-        run_extension_action(&c, "pg_trgm", &install).await.unwrap();
+        run_extension_action(&s, "shop", "pg_trgm", &install)
+            .await
+            .unwrap();
         // idempotent
-        run_extension_action(&c, "pg_trgm", &install).await.unwrap();
+        run_extension_action(&s, "shop", "pg_trgm", &install)
+            .await
+            .unwrap();
         let installed = list_extensions(&c).await.unwrap();
         let e = installed.iter().find(|e| e.name == "pg_trgm").unwrap();
         assert_eq!(e.schema, "agent_objects_ext");
@@ -400,7 +436,7 @@ mod live_tests {
         assert_eq!(ext.schema.as_deref(), Some("agent_objects_ext"));
 
         // already at the default version: a no-op, not an error
-        run_extension_action(&c, "pg_trgm", &ExtensionAction::Update)
+        run_extension_action(&s, "shop", "pg_trgm", &ExtensionAction::Update)
             .await
             .unwrap();
         // an object using the extension blocks a plain drop; CASCADE takes it
@@ -411,13 +447,23 @@ mod live_tests {
             )
             .await
             .unwrap();
-        let err = run_extension_action(&c, "pg_trgm", &ExtensionAction::Drop { cascade: false })
-            .await
-            .unwrap_err();
+        let err = run_extension_action(
+            &s,
+            "shop",
+            "pg_trgm",
+            &ExtensionAction::Drop { cascade: false },
+        )
+        .await
+        .unwrap_err();
         assert!(err.to_string().contains("depend"), "{err}");
-        run_extension_action(&c, "pg_trgm", &ExtensionAction::Drop { cascade: true })
-            .await
-            .unwrap();
+        run_extension_action(
+            &s,
+            "shop",
+            "pg_trgm",
+            &ExtensionAction::Drop { cascade: true },
+        )
+        .await
+        .unwrap();
         assert!(!list_extensions(&c)
             .await
             .unwrap()
@@ -537,6 +583,45 @@ mod live_tests {
         .is_err());
         c.client
             .batch_execute("DROP TABLE agent_objects_m")
+            .await
+            .unwrap();
+        s.shutdown().await;
+    }
+
+    /// The Timescale server's update goes on a session of its own. The
+    /// server's default is current already here, so it is a no-op, which
+    /// still proves the statement runs on a fresh connection.
+    #[tokio::test]
+    #[ignore = "needs POSTGRES_STUDIO_TIMESCALE_URI"]
+    async fn live_timescale_update() {
+        use crate::pg::objects::{run_extension_action, ExtensionAction};
+        let uri = std::env::var("POSTGRES_STUDIO_TIMESCALE_URI")
+            .unwrap_or_else(|_| panic!("set POSTGRES_STUDIO_TIMESCALE_URI"));
+        let profile = crate::models::ConnectionProfile {
+            id: "live-timescale".into(),
+            name: "live-timescale".into(),
+            color: None,
+            source: crate::models::ConnectionSource::Uri { uri },
+            database: None,
+            username: None,
+            has_password: false,
+            tls: crate::models::TlsOptions {
+                ssl_mode: crate::models::SslMode::Disable,
+                ..Default::default()
+            },
+            ssh_tunnel: None,
+            advanced: crate::models::ConnectionAdvancedOptions::default(),
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let known = std::sync::Arc::new(
+            crate::ssh_tunnel::KnownHosts::load(&std::env::temp_dir()).unwrap(),
+        );
+        let s =
+            crate::pg::PgSession::connect(&profile, &crate::secrets::InMemoryStore::new(), &known)
+                .await
+                .unwrap();
+        run_extension_action(&s, "tsdb", "timescaledb", &ExtensionAction::Update)
             .await
             .unwrap();
         s.shutdown().await;

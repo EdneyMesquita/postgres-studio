@@ -1,5 +1,5 @@
 import { useRef } from "react";
-import { Eye, Folder, FolderOpen, Layers, Layers2, ListOrdered, Sigma, Table, Type } from "lucide-react";
+import { ChartGantt, Eye, Folder, FolderOpen, Layers, Layers2, ListOrdered, RefreshCcw, Sigma, Table, Type } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "../../lib/tauri";
@@ -9,12 +9,17 @@ import { groupKey, groupOpen, schemaKey, useExplorerStore } from "../../store/ex
 import type { ObjectGroup } from "../../store/explorerStore";
 import { selectActiveTab, useSessionsStore } from "../../store/sessionsStore";
 import type { TabConnection } from "../../store/sessionsStore";
+import { timescaleActionBlock, useTimescaleInfo } from "../../store/timescaleInfo";
 import { openImportCsv } from "../../store/transferStore";
 import { useUiStore } from "../../store/uiStore";
-import type { FunctionEntry, RelationEntry, SchemaInfo, TypeEntry } from "../../types/pg";
+import type { TimescaleInfo } from "../../types/timescale";
+import type { FunctionEntry, RelKind, RelationEntry, SchemaInfo, TableInfo, TypeEntry } from "../../types/pg";
 import { RowContextMenu } from "@/components/common/ActionMenu";
-import { formatCount } from "@/lib/format";
+import { formatBytes, formatCount } from "@/lib/format";
+import { createCaggSql, createHypertableSql, columnstorePolicySql, refreshPolicySql, retentionPolicySql } from "@/lib/timescaleSql";
 import { generateSql, runMaintenance } from "../objects/tableActions";
+import { openSql } from "../objects/openSql";
+import { runTimescaleAction } from "../timescale/runAction";
 import { Highlighted } from "./Highlighted";
 import { TreeNote } from "./TreeNote";
 import { TreeRow } from "./TreeRow";
@@ -34,6 +39,7 @@ const GROUPS: { id: ObjectGroup; label: string; icon: LucideIcon }[] = [
   { id: "tables", label: "Tables", icon: Table },
   { id: "views", label: "Views", icon: Eye },
   { id: "materializedViews", label: "Materialized views", icon: Layers2 },
+  { id: "continuousAggregates", label: "Continuous aggregates", icon: RefreshCcw },
   { id: "functions", label: "Functions", icon: Sigma },
   { id: "sequences", label: "Sequences", icon: ListOrdered },
   { id: "types", label: "Types", icon: Type },
@@ -58,6 +64,30 @@ async function showDefinition(
   }
 }
 
+/** Runs generated SQL in a console; the table is described first, for its time column. */
+async function describeThenOpen(
+  connection: TabConnection,
+  sessionId: string,
+  database: string,
+  schema: string,
+  name: string,
+  build: (info: TableInfo) => string,
+) {
+  try {
+    const info = await api.describeTable(sessionId, database, schema, name);
+    openSql(connection, database, build(info));
+  } catch (e) {
+    toast.error(`Couldn't read ${schema}.${name}`, { description: String(e) });
+  }
+}
+
+/** A hypertable's time dimension; a plain table's first date or timestamp column; null when there is none. */
+function timeColumnOf(info: TableInfo): string | null {
+  const dimension = info.hypertable?.dimensions.find((d) => d.kind === "Time");
+  if (dimension) return dimension.column;
+  return info.columns.find((c) => /^(timestamp|date\b)/.test(c.typeName))?.name ?? null;
+}
+
 /** A schema: its object groups, each listing what it holds. */
 export function SchemaRow({ schema, database, sessionId, connection, depth, query }: SchemaRowProps) {
   const key = schemaKey(connection.id, database, schema.name);
@@ -69,9 +99,11 @@ export function SchemaRow({ schema, database, sessionId, connection, depth, quer
   const openConsole = useSessionsStore((s) => s.openConsole);
 
   const objects = node?.objects ?? null;
+  const timescale = useTimescaleInfo(connection.id, sessionId, database);
+  // an older backend sends no continuous aggregates
+  const listOf = (id: ObjectGroup) => (objects?.[id] ?? []) as { name: string }[];
   const filtered = (list: { name: string }[]) => (query ? list.filter((o) => o.name.toLowerCase().includes(query)) : list);
-  const hasHits =
-    query !== "" && objects !== null && GROUPS.some((g) => filtered(objects[g.id] as { name: string }[]).length > 0);
+  const hasHits = query !== "" && objects !== null && GROUPS.some((g) => filtered(listOf(g.id)).length > 0);
   const isOpen = (node?.expanded ?? false) || hasHits;
 
   return (
@@ -110,7 +142,7 @@ export function SchemaRow({ schema, database, sessionId, connection, depth, quer
           )}
           {objects &&
             GROUPS.map((g) => {
-              const items = filtered(objects[g.id] as { name: string }[]);
+              const items = filtered(listOf(g.id));
               if (items.length === 0 && (query || g.id !== "tables")) return null;
               const gKey = groupKey(connection.id, database, schema.name, g.id);
               const open = groupOpen(groups, gKey) || (query !== "" && items.length > 0);
@@ -127,6 +159,7 @@ export function SchemaRow({ schema, database, sessionId, connection, depth, quer
                   sessionId={sessionId}
                   connection={connection}
                   query={query}
+                  timescale={timescale}
                 />
               );
             })}
@@ -147,10 +180,18 @@ interface ObjectGroupRowsProps {
   sessionId: string;
   connection: TabConnection;
   query: string;
+  timescale: TimescaleInfo | null;
+}
+
+/** The hover text of a hypertable's or cagg's size: its kind, its rows and its size. */
+function timescaleSizeTitle(rel: RelationEntry, sizeBytes: number): string {
+  const what = rel.timescale === "hypertable" ? "Hypertable" : "Continuous aggregate";
+  const rows = rel.rowEstimate !== null ? ` · about ${rel.rowEstimate.toLocaleString("en-US")} rows` : "";
+  return `${what}${rows} · ${formatBytes(sizeBytes)}`;
 }
 
 /** A group header (Tables, Views...) and its items, windowed when long. */
-function ObjectGroupRows({ group, items, open, depth, onToggle, schema, database, sessionId, connection, query }: ObjectGroupRowsProps) {
+function ObjectGroupRows({ group, items, open, depth, onToggle, schema, database, sessionId, connection, query, timescale }: ObjectGroupRowsProps) {
   const listRef = useRef<HTMLDivElement>(null);
   const rows = useWindowedRows(listRef, open ? items.length : 0);
   const activeTable = useSessionsStore((s) => {
@@ -234,10 +275,13 @@ function ObjectGroupRows({ group, items, open, depth, onToggle, schema, database
             }
             const rel = item as RelationEntry;
             const isSequence = group.id === "sequences";
+            // a continuous aggregate is a view to the explorer, whatever its relkind
+            const kind: RelKind = rel.timescale === "cagg" ? "v" : rel.kind;
+            const role = rel.timescale ?? (kind === "r" ? "plain" : null);
             const open = () =>
               isSequence
                 ? void showDefinition(connection, sessionId, database, schema, rel.name, "sequence")
-                : void useSessionsStore.getState().openTable(sessionId, connection, database, schema, rel.name, rel.kind);
+                : void useSessionsStore.getState().openTable(sessionId, connection, database, schema, rel.name, kind);
             return (
               <RowContextMenu
                 key={rel.name}
@@ -248,27 +292,65 @@ function ObjectGroupRows({ group, items, open, depth, onToggle, schema, database
                     isSequence,
                     onOpen: open,
                     onOpenSql: () => {
-                      void useSessionsStore.getState().openTable(sessionId, connection, database, schema, rel.name, rel.kind);
+                      void useSessionsStore.getState().openTable(sessionId, connection, database, schema, rel.name, kind);
                       useUiStore.getState().setMainTab(`${connection.id}/${database}/${schema}.${rel.name}`, "sql");
                     },
                     onStructure: () => {
-                      void useSessionsStore.getState().openTable(sessionId, connection, database, schema, rel.name, rel.kind);
+                      void useSessionsStore.getState().openTable(sessionId, connection, database, schema, rel.name, kind);
                       useUiStore.getState().setMainTab(`${connection.id}/${database}/${schema}.${rel.name}`, "structure");
                     },
-                    onDiagram: ["r", "p", "f"].includes(rel.kind)
+                    onDiagram: ["r", "p", "f"].includes(kind)
                       ? () => useSessionsStore.getState().openDiagram(connection, database, schema, rel.name)
                       : undefined,
-                    kind: rel.kind,
+                    kind,
                     readOnly,
                     onMaintenance: (action) =>
                       void runMaintenance({ connection, sessionId, database, schema, table: rel.name }, action),
                     onGenerate: (kind) => void generateSql({ connection, sessionId, database, schema, table: rel.name }, kind),
-                    onImportCsv: ["r", "p"].includes(rel.kind)
+                    onImportCsv: ["r", "p"].includes(kind)
                       ? () => openImportCsv(connection, database, schema, rel.name)
                       : undefined,
                     importDisabled: useConnectionsStore.getState().sessions[connection.id]?.readOnly ?? false,
                     onShowDefinition: () =>
                       void showDefinition(connection, sessionId, database, schema, rel.name, isSequence ? "sequence" : "table"),
+                    timescale:
+                      timescale && role && !isSequence
+                        ? {
+                            role,
+                            community: timescale.community,
+                            blocked: timescaleActionBlock(timescale, readOnly, true),
+                            onConvert: () =>
+                              void describeThenOpen(connection, sessionId, database, schema, rel.name, (info) =>
+                                createHypertableSql(schema, rel.name, timeColumnOf(info)),
+                              ),
+                            onRetention: () => openSql(connection, database, retentionPolicySql(schema, rel.name)),
+                            onColumnstore: () => openSql(connection, database, columnstorePolicySql(schema, rel.name)),
+                            onNewCagg: () =>
+                              void describeThenOpen(connection, sessionId, database, schema, rel.name, (info) =>
+                                createCaggSql(schema, rel.name, timeColumnOf(info)),
+                              ),
+                            onRefresh: () =>
+                              void runTimescaleAction(
+                                { sessionId, database },
+                                { kind: "refreshCagg", schema, name: rel.name, start: null, end: null },
+                                {
+                                  label: `Refresh ${schema}.${rel.name}`,
+                                  ask: {
+                                    title: `Refresh ${schema}.${rel.name}?`,
+                                    detail:
+                                      "Recomputes every bucket of the continuous aggregate from its source. On a large hypertable this can take a while.",
+                                    confirmLabel: "Refresh",
+                                  },
+                                },
+                              ),
+                            onRefreshRange: () => {
+                              void useSessionsStore.getState().openTable(sessionId, connection, database, schema, rel.name, kind);
+                              useUiStore.getState().setMainTab(`${connection.id}/${database}/${schema}.${rel.name}`, "structure");
+                            },
+                            onRefreshPolicy: () => openSql(connection, database, refreshPolicySql(schema, rel.name)),
+                            onJobs: () => useSessionsStore.getState().openActivity(connection, database, { view: "jobs" }),
+                          }
+                        : undefined,
                   })
                 }
               >
@@ -276,13 +358,21 @@ function ObjectGroupRows({ group, items, open, depth, onToggle, schema, database
                   depth={depth + 1}
                   selected={activeTable === rel.name}
                   title={rel.comment ? `${rel.name}: ${rel.comment}` : rel.name}
-                  icon={<Icon className="size-3.5 shrink-0 text-fg-2" aria-hidden />}
+                  icon={
+                    rel.timescale === "hypertable" ? (
+                      <ChartGantt className="size-3.5 shrink-0 text-fg-2" aria-hidden />
+                    ) : (
+                      <Icon className="size-3.5 shrink-0 text-fg-2" aria-hidden />
+                    )
+                  }
                   label={<Highlighted name={rel.name} query={query} />}
                   trailing={
                     rel.kind === "p" ? (
                       <span>partitioned</span>
                     ) : rel.kind === "f" ? (
                       <span>foreign</span>
+                    ) : rel.timescale && rel.sizeBytes !== undefined ? (
+                      <span title={timescaleSizeTitle(rel, rel.sizeBytes)}>{formatBytes(rel.sizeBytes)}</span>
                     ) : rel.rowEstimate !== null && !isSequence && group.id !== "views" ? (
                       <span title={`About ${rel.rowEstimate.toLocaleString("en-US")} rows`}>{formatCount(rel.rowEstimate)}</span>
                     ) : undefined

@@ -39,8 +39,8 @@ export function usePaletteTables(): PaletteTable[] {
         if (!key.startsWith(prefix) || !node.objects) continue;
         const [database, ...rest] = key.slice(prefix.length).split("/");
         const schema = rest.join("/");
-        const { tables, views, materializedViews } = node.objects;
-        for (const rel of [...tables, ...views, ...materializedViews]) {
+        const { tables, views, materializedViews, continuousAggregates } = node.objects;
+        for (const rel of [...tables, ...views, ...materializedViews, ...(continuousAggregates ?? [])]) {
           // matched on every keystroke, so lowercased once here
           const label = (schema === "public" ? rel.name : `${schema}.${rel.name}`).toLowerCase();
           items.push({

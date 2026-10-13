@@ -7,15 +7,22 @@ import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Switch } from "@/components/ui/switch";
 import { useConnectionColor } from "@/lib/connectionColor";
 import { filterActivity, formatDuration, oneLine } from "@/lib/activity";
+import { errorsHidden, filterJobs } from "@/lib/jobs";
+import { timescaleApi } from "@/lib/timescaleApi";
 import { cn } from "@/lib/utils";
 import { objectsApi } from "../../lib/objectsApi";
 import { confirm } from "../../store/confirmStore";
 import { useConnectionsStore } from "../../store/connectionsStore";
+import { useSessionsStore } from "../../store/sessionsStore";
 import type { ActivityTab } from "../../store/sessionsStore";
+import { timescaleActionBlock, useTimescaleInfo } from "../../store/timescaleInfo";
 import type { ActivityRow, LockRow } from "../../types/objects";
+import type { JobInfo } from "../../types/timescale";
 import { SqlText } from "../console/SqlText";
+import { runTimescaleAction } from "../timescale/runAction";
+import { JobDetail, JobsTable } from "./JobsTable";
 
-type View = "sessions" | "locks";
+type View = "sessions" | "locks" | "jobs";
 
 /** How often the lists are read again while auto-refresh is on. */
 const REFRESH_MS = 2000;
@@ -38,33 +45,48 @@ function Toggle({ label, checked, onChange, title }: { label: string; checked: b
   );
 }
 
-/** The server's sessions and locks, refreshed on a timer while the tab is on screen. */
+/** The server's sessions, locks and TimescaleDB jobs, refreshed on a timer while the tab is on screen. */
 export const ActivityTabView = memo(function ActivityTabView({ tab, shown }: { tab: ActivityTab; shown: boolean }) {
   const session = useConnectionsStore((s) => s.sessions[tab.connection.id]);
   const color = useConnectionColor(tab.connection.id);
   const sessionId = session?.sessionId;
+  const readOnly = session?.readOnly ?? false;
+  const info = useTimescaleInfo(tab.connection.id, sessionId, tab.database);
+  const timescale = info !== null;
 
-  const [view, setView] = useState<View>("sessions");
+  const [view, setView] = useState<View>(tab.view ?? "sessions");
   const [hideIdle, setHideIdle] = useState(true);
   const [thisDatabase, setThisDatabase] = useState(false);
   const [showBackground, setShowBackground] = useState(false);
   const [allLocks, setAllLocks] = useState(false);
+  const [failedOnly, setFailedOnly] = useState(false);
+  const [hideInternal, setHideInternal] = useState(true);
   const [auto, setAuto] = useState(true);
   const [rows, setRows] = useState<ActivityRow[] | null>(null);
   const [locks, setLocks] = useState<LockRow[] | null>(null);
+  const [jobs, setJobs] = useState<JobInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [updated, setUpdated] = useState<Date | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
+  const [selectedJob, setSelectedJob] = useState<number | null>(null);
   const inFlight = useRef(false);
+
+  // openActivity on a tab already open sets its view again; the tab keeps
+  // the one in use, so only a real request changes it
+  useEffect(() => {
+    if (tab.view) setView(tab.view);
+  }, [tab.view]);
 
   const load = useCallback(async () => {
     if (!sessionId || inFlight.current) return;
+    if (view === "jobs" && !timescale) return;
     inFlight.current = true;
     setLoading(true);
     try {
       if (view === "sessions") setRows(await objectsApi.serverActivity(sessionId, tab.database));
-      else setLocks(await objectsApi.serverLocks(sessionId, tab.database, allLocks));
+      else if (view === "locks") setLocks(await objectsApi.serverLocks(sessionId, tab.database, allLocks));
+      else setJobs(await timescaleApi.jobs(sessionId, tab.database));
       setError(null);
       setUpdated(new Date());
     } catch (e) {
@@ -73,7 +95,7 @@ export const ActivityTabView = memo(function ActivityTabView({ tab, shown }: { t
       inFlight.current = false;
       setLoading(false);
     }
-  }, [sessionId, tab.database, view, allLocks]);
+  }, [sessionId, tab.database, view, allLocks, timescale]);
 
   // read when opened, and when the view or its scope changes
   useEffect(() => {
@@ -101,6 +123,9 @@ export const ActivityTabView = memo(function ActivityTabView({ tab, shown }: { t
     [rows, hideIdle, thisDatabase, showBackground, tab.database],
   );
   const selectedRow = shownRows.find((r) => r.pid === selected) ?? null;
+  const shownJobs = useMemo(() => filterJobs(jobs ?? [], { failedOnly, hideInternal }), [jobs, failedOnly, hideInternal]);
+  const selectedJobRow = shownJobs.find((j) => j.jobId === selectedJob) ?? null;
+  const actionBlock = timescaleActionBlock(info, readOnly, true);
 
   async function stop(pid: number, user: string | null, query: string | null, own: boolean, terminate: boolean) {
     if (!sessionId) return;
@@ -126,6 +151,34 @@ export const ActivityTabView = memo(function ActivityTabView({ tab, shown }: { t
     void load();
   }
 
+  async function jobAction(job: JobInfo, action: "run" | "pause" | "resume") {
+    if (!sessionId) return;
+    const target = { sessionId, database: tab.database };
+    const { jobId } = job;
+    if (action === "run") {
+      await runTimescaleAction(target, { kind: "runJob", jobId }, {
+        label: `Run job ${jobId}`,
+        ask: {
+          title: `Run job ${jobId} now?`,
+          detail: "The scheduler starts it right away; its outcome shows up here and in the job's history.",
+          confirmLabel: "Run now",
+        },
+      });
+    } else if (action === "pause") {
+      await runTimescaleAction(target, { kind: "pauseJob", jobId }, {
+        label: `Pause job ${jobId}`,
+        ask: {
+          title: `Pause job ${jobId}?`,
+          detail: "The scheduler stops starting it until it is resumed.",
+          confirmLabel: "Pause",
+        },
+      });
+    } else {
+      await runTimescaleAction(target, { kind: "resumeJob", jobId }, { label: `Resume job ${jobId}` });
+    }
+    void load();
+  }
+
   if (!sessionId) {
     return <div className="grid h-full place-items-center bg-editor text-sm text-fg-3">{tab.connection.name} is not connected.</div>;
   }
@@ -143,10 +196,17 @@ export const ActivityTabView = memo(function ActivityTabView({ tab, shown }: { t
         <SegmentedControl<View>
           aria-label="View"
           value={view}
-          onChange={setView}
+          onChange={(v) => {
+            setView(v);
+            setSelectedJob(null);
+            useSessionsStore.setState((s) => ({
+              tabs: s.tabs.map((t) => (t.id === tab.id && t.kind === "activity" ? { ...t, view: v } : t)),
+            }));
+          }}
           options={[
             { value: "sessions", label: "Sessions" },
             { value: "locks", label: "Locks" },
+            ...(timescale ? [{ value: "jobs" as const, label: "Jobs" }] : []),
           ]}
         />
         {view === "sessions" ? (
@@ -155,12 +215,27 @@ export const ActivityTabView = memo(function ActivityTabView({ tab, shown }: { t
             <Toggle label="This database only" checked={thisDatabase} onChange={setThisDatabase} />
             <Toggle label="Background" checked={showBackground} onChange={setShowBackground} title="Show the server's own processes: autovacuum, WAL writer..." />
           </>
+        ) : view === "jobs" ? (
+          <>
+            <Toggle label="Failed only" checked={failedOnly} onChange={setFailedOnly} title="Only the jobs whose last run failed" />
+            <Toggle label="Hide internal" checked={hideInternal} onChange={setHideInternal} title="Leave out TimescaleDB's own jobs: telemetry, job history retention" />
+          </>
         ) : (
           <Toggle label="All locks" checked={allLocks} onChange={setAllLocks} title="Off: only locks that wait or are waited on" />
         )}
         <span className="flex-1" />
         <span className="truncate text-sm whitespace-nowrap text-fg-3 tabular-nums @max-[1040px]:hidden">
-          {view === "sessions" ? (rows ? `${shownRows.length} of ${rows.length} sessions` : "") : locks ? `${locks.length} locks` : ""}
+          {view === "sessions"
+            ? rows
+              ? `${shownRows.length} of ${rows.length} sessions`
+              : ""
+            : view === "jobs"
+              ? jobs
+                ? `${shownJobs.length} of ${jobs.length} jobs`
+                : ""
+              : locks
+                ? `${locks.length} locks`
+                : ""}
           {updated && ` · ${updated.toLocaleTimeString()}`}
         </span>
         <Toggle label="Auto-refresh" checked={auto} onChange={setAuto} title={`Read again every ${REFRESH_MS / 1000} s while this tab is shown`} />
@@ -171,9 +246,22 @@ export const ActivityTabView = memo(function ActivityTabView({ tab, shown }: { t
       </div>
 
       {error && <p className="m-0 border-b border-line-soft px-3.5 py-2 text-sm text-danger">{error}</p>}
+      {view === "jobs" && jobs && errorsHidden(jobs) && (
+        <p className="m-0 border-b border-line-soft px-3.5 py-2 text-sm text-fg-3">Errors are only visible to the job's owner.</p>
+      )}
 
       <div className="min-h-0 flex-1 overflow-auto">
-        {view === "sessions" ? (
+        {view === "jobs" ? (
+          !timescale ? (
+            <p className="p-4 text-sm text-fg-3">Jobs need TimescaleDB in this database.</p>
+          ) : jobs === null ? (
+            <p className="p-4 text-sm text-fg-3">Loading…</p>
+          ) : shownJobs.length === 0 ? (
+            <p className="p-4 text-sm text-fg-3">{jobs.length === 0 ? "No jobs." : "No jobs match the filters."}</p>
+          ) : (
+            <JobsTable jobs={shownJobs} selected={selectedJob} onSelect={(id) => setSelectedJob(id === selectedJob ? null : id)} />
+          )
+        ) : view === "sessions" ? (
           rows === null ? (
             <p className="p-4 text-sm text-fg-3">Loading…</p>
           ) : shownRows.length === 0 ? (
@@ -210,6 +298,10 @@ export const ActivityTabView = memo(function ActivityTabView({ tab, shown }: { t
           <LocksTable locks={locks} />
         )}
       </div>
+
+      {view === "jobs" && selectedJobRow && (
+        <JobDetail job={selectedJobRow} blocked={actionBlock} onAction={(action) => void jobAction(selectedJobRow, action)} />
+      )}
 
       {view === "sessions" && selectedRow && (
         <div className="flex max-h-[34%] min-h-[88px] flex-none flex-col border-t border-line">
