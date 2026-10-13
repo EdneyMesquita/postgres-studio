@@ -140,6 +140,17 @@ pub struct SchemaObjects {
     pub types: Vec<TypeEntry>,
 }
 
+/// A catalog read with whether TimescaleDB is installed, asked in the same
+/// statement: these run on every expand and table open, and a separate
+/// probe would cost a round trip each time on databases that never had it.
+#[derive(Deserialize)]
+struct WithTimescale<T> {
+    #[serde(default)]
+    timescale: bool,
+    #[serde(flatten)]
+    inner: T,
+}
+
 pub async fn list_schema_objects(client: &PgClient, schema: &str) -> AppResult<SchemaObjects> {
     let rel = |kinds: &str| {
         format!(
@@ -159,6 +170,7 @@ pub async fn list_schema_objects(client: &PgClient, schema: &str) -> AppResult<S
     };
     let sql = format!(
         "SELECT json_build_object(
+            'timescale', EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb'),
             'tables', {tables},
             'views', {views},
             'materializedViews', {matviews},
@@ -185,10 +197,11 @@ pub async fn list_schema_objects(client: &PgClient, schema: &str) -> AppResult<S
         type_ext = not_extension("pg_type", "t.oid"),
         schema = literal(schema),
     );
-    let mut objects: SchemaObjects = json_query(client, &sql)
+    let read: WithTimescale<SchemaObjects> = json_query(client, &sql)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("schema {schema}")))?;
-    if super::timescale::probe(client).await?.is_some() {
+    let mut objects = read.inner;
+    if read.timescale {
         super::timescale::annotate_schema_objects(client, schema, &mut objects).await?;
     }
     Ok(objects)
@@ -448,6 +461,7 @@ pub async fn describe_table(client: &PgClient, schema: &str, table: &str) -> App
             WHERE n.nspname = {schema} AND c.relname = {table}
          )
          SELECT json_build_object(
+            'timescale', EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb'),
             'schema', t.nspname, 'name', t.relname, 'kind', t.relkind,
             'rowEstimate', CASE WHEN t.reltuples < 0 THEN NULL ELSE t.reltuples::bigint END,
             'sizeBytes', pg_total_relation_size(t.oid),
@@ -535,13 +549,16 @@ pub async fn describe_table(client: &PgClient, schema: &str, table: &str) -> App
         in_cols = cols_of("con.conkey", "con.conrelid"),
         in_ref_cols = cols_of("con.confkey", "con.confrelid"),
     );
-    let mut info: TableInfo = json_query(client, &sql)
+    let read: WithTimescale<TableInfo> = json_query(client, &sql)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("table {schema}.{table}")))?;
+    let mut info = read.inner;
     info.row_key = row_key(&info);
     info.ddl = ddl(&info);
-    if let Some(ts) = super::timescale::probe(client).await? {
-        super::timescale::annotate_table(client, &mut info, &ts).await?;
+    if read.timescale {
+        if let Some(ts) = super::timescale::probe(client).await? {
+            super::timescale::annotate_table(client, &mut info, &ts).await?;
+        }
     }
     Ok(info)
 }
