@@ -75,12 +75,14 @@ export interface DiagramTab {
   focus: string | null;
 }
 
-/** The server's sessions and locks, one tab per connection and database. */
+/** The server's sessions, locks and TimescaleDB jobs, one tab per connection and database. */
 export interface ActivityTab {
   kind: "activity";
   id: string;
   connection: TabConnection;
   database: string;
+  /** The view it opens on; the tab keeps the one the user switched to. */
+  view?: "sessions" | "locks" | "jobs";
 }
 
 export type Tab = TableTab | ConsoleTab | DiagramTab | ActivityTab;
@@ -113,8 +115,8 @@ interface SessionsState {
   openConsole: (connection: TabConnection, database: string, options?: { fromAssistant?: boolean }) => string;
   /** Focuses the schema's diagram, opening it if needed; `focus` selects a table. */
   openDiagram: (connection: TabConnection, database: string, schema: string, focus?: string) => void;
-  /** Focuses the database's activity monitor, opening it if needed. */
-  openActivity: (connection: TabConnection, database: string) => void;
+  /** Focuses the database's activity monitor, opening it if needed; `view` picks its view. */
+  openActivity: (connection: TabConnection, database: string, options?: { view?: "jobs" | "sessions" | "locks" }) => void;
   /** Points a console tab at another database of its connection. */
   switchConsoleDatabase: (id: string, database: string) => void;
   activateTab: (id: string) => void;
@@ -283,11 +285,14 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
       });
     },
 
-    openActivity: (connection, database) => {
+    openActivity: (connection, database, options) => {
       const id = `activity:${connection.id}/${database}`;
       set((s) => {
-        if (s.tabs.some((t) => t.id === id)) return { activeTabId: id };
-        const tab: ActivityTab = { kind: "activity", id, connection, database };
+        if (s.tabs.some((t) => t.id === id)) {
+          const tabs = options?.view ? s.tabs.map((t) => (t.id === id && t.kind === "activity" ? { ...t, view: options.view } : t)) : s.tabs;
+          return { tabs, activeTabId: id };
+        }
+        const tab: ActivityTab = { kind: "activity", id, connection, database, view: options?.view };
         return { tabs: [...s.tabs, tab], activeTabId: id };
       });
     },
