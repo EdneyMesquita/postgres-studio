@@ -38,7 +38,7 @@ async function hasObjects(sessionId: string, database: string): Promise<boolean>
   if (schemas.some((s) => s.name !== "public")) return true;
   if (!schemas.some((s) => s.name === "public")) return false;
   const o = await api.listSchemaObjects(sessionId, database, "public");
-  return [o.tables, o.views, o.materializedViews, o.sequences, o.functions, o.types].some((l) => l.length > 0);
+  return [o.tables, o.views, o.materializedViews, o.continuousAggregates ?? [], o.sequences, o.functions, o.types].some((l) => l.length > 0);
 }
 
 /** Restores a backup into a database with pg_restore, or psql for a SQL file. */

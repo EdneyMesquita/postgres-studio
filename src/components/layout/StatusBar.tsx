@@ -1,6 +1,7 @@
 import { GitCommitHorizontal, Loader2, Lock, Plug } from "lucide-react";
 import { useConsoleStore } from "../../store/consoleStore";
 import { pendingCount } from "../../store/sessionsStore";
+import { useTimescaleInfo } from "../../store/timescaleInfo";
 import type { ReactNode } from "react";
 import { ConnectionChip } from "@/components/ui/ConnectionChip";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -33,6 +34,7 @@ export function StatusBar() {
   const connected = useConnectedCount();
   const tab = active?.tab;
   const tx = useConsoleStore((s) => (tab ? (s.consoles[tab.id]?.tx ?? "idle") : "idle"));
+  const timescale = useTimescaleInfo(tab?.connection.id ?? "", active?.session?.sessionId, tab?.database ?? "");
 
   return (
     <footer className="flex h-[26px] shrink-0 items-center gap-0.5 overflow-hidden border-t border-seam bg-panel px-2 text-xs text-fg-2">
@@ -41,6 +43,11 @@ export function StatusBar() {
           <ConnectionChip name={active.tab.connection.name} color={active.color} size="dot" />
           <span className="truncate font-medium text-fg">{active.tab.connection.name}</span>
           {active.session?.serverVersion && <span>PostgreSQL {active.session.serverVersion}</span>}
+          {timescale && (
+            <span title={`TimescaleDB ${timescale.version}, ${timescale.community ? "Community" : "Apache"} edition`}>
+              TimescaleDB {timescale.major}.{timescale.minor}
+            </span>
+          )}
         </StatusItem>
       ) : (
         connected === 0 && <StatusItem>No connection open</StatusItem>
