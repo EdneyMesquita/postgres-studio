@@ -72,11 +72,11 @@ export POSTGRES_STUDIO_TEST_URI="postgres://postgres:postgres@localhost:5433/sho
 cargo test --lib -- --ignored
 ```
 
-The TimescaleDB support has its own server in the same compose file (`docker compose -f docker-compose.dev.yml up -d timescale`, port 5436, database `tsdb`). Its live tests run with:
+The TimescaleDB support has its own server in the same compose file (`docker compose -f docker-compose.dev.yml up -d timescale`, port 5436, database `tsdb`). Its live tests share that seed, so they run one at a time:
 
 ```sh
 export POSTGRES_STUDIO_TIMESCALE_URI="postgres://postgres:postgres@localhost:5436/tsdb"
-cargo test --lib -- --ignored timescale
+cargo test --lib -- --ignored --test-threads=1 timescale
 ```
 
 ## Benchmarks
