@@ -37,7 +37,11 @@ Used for long stretches next to an IDE and a terminal, often on a laptop screen.
 - Explain: `EXPLAIN (ANALYZE, BUFFERS)` as a tree.
 - Tab groups and a split editor of up to four panes.
 - Assistant (opt-in): drives the Claude Code or Codex CLI already installed on the machine, through read-only tools served over a local MCP server, on a session with `default_transaction_read_only`.
-- Terminology: connection, database, schema, table, view, row, column, key, query, console, transaction, saved script, tab, Assistant.
+- Settings (Ctrl/Cmd+,): theme (dark, light, system), reopening the last session's tabs, rows per table page and per console result, console layout and engine, import/export, the Assistant, the MCP server.
+- Console engines: the built-in one, or psql - found on the machine or picked, never downloaded - per console or by default. psql runs as a process per run with the password in its environment; its HTML output becomes the same result grids; each run is its own session.
+- MCP server (opt-in): AI clients on the machine (Claude Code, Cursor, Codex, VS Code) reach the saved connections over a local MCP server with a bearer token; each capability is Off, Ask (an approval card with the SQL and a rolled-back dry-run count) or Allow, each connection None, Read or Read & write; reads run in a read-only transaction; "Add to &lt;client&gt;" writes the entry into that client's config. Separate from the Assistant, which stays read-only.
+- Reopened tabs: the last session's tabs come back dormant and connect only when opened.
+- Terminology: connection, database, schema, table, view, row, column, key, query, console, transaction, saved script, tab, Assistant, MCP client, grant.
 
 ## Roadmap
 
@@ -62,4 +66,4 @@ Sample data lives only in the local dev database (docker-compose.dev.yml). No cu
 2. Always show where you are: which server, database, schema and table every tab, query and console runs against.
 3. Nothing is written by surprise: edits wait as pending changes with their SQL visible until the user commits.
 4. Fast by keyboard, fine by mouse: every frequent action has a shortcut and a visible control.
-5. Nothing leaves the machine: no account, no network beyond the user's own servers. The one exception is the Assistant, off until the user sets it up.
+5. Nothing leaves the machine: no account, no network beyond the user's own servers. The exceptions are opt-in and said plainly where they're turned on: the Assistant, whose messages and what its agent reads go to the agent's provider (Anthropic or OpenAI) under the user's own CLI account; and the MCP server, whose clients - and whatever provider each one uses - get what the user's grants let them read.

@@ -29,7 +29,7 @@ export function ToolStripe() {
       <span className="flex-1" />
       <ToolStripeButton
         label="Import / export connections"
-        onClick={() => useUiStore.getState().setImportExportOpen(true)}
+        onClick={() => useUiStore.getState().openTransfer("export")}
       >
         <ArrowLeftRight />
       </ToolStripeButton>

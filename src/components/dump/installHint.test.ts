@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hostOs, installHint } from "./installHint";
+import { hostOs, installHint, psqlInstallHint } from "./installHint";
 
 describe("installHint", () => {
   it("names the version the server needs", () => {
@@ -12,5 +12,13 @@ describe("installHint", () => {
     expect(hostOs("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")).toBe("windows");
     expect(hostOs("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)")).toBe("mac");
     expect(hostOs("Mozilla/5.0 (X11; Linux x86_64)")).toBe("linux");
+  });
+});
+
+describe("psqlInstallHint", () => {
+  it("gives a command for every OS", () => {
+    expect(psqlInstallHint("linux").command).toBe("sudo apt install postgresql-client");
+    expect(psqlInstallHint("mac").command).toBe("brew install libpq");
+    expect(psqlInstallHint("windows").command).toContain("winget install");
   });
 });

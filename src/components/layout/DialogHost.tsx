@@ -14,6 +14,9 @@ const ConnectionsImportExportDialog = lazy(() =>
     default: m.ConnectionsImportExportDialog,
   })),
 );
+const SettingsDialog = lazy(() =>
+  import("../settings/SettingsDialog").then((m) => ({ default: m.SettingsDialog })),
+);
 const BackupDialog = lazy(() => import("../dump/BackupDialog").then((m) => ({ default: m.BackupDialog })));
 const RestoreDialog = lazy(() => import("../dump/RestoreDialog").then((m) => ({ default: m.RestoreDialog })));
 const EditConnectionDialog = lazy(() =>
@@ -22,15 +25,16 @@ const EditConnectionDialog = lazy(() =>
 
 /**
  * App-level dialogs, opened from anywhere through uiStore: the connection
- * form (for a new connection or a saved one), import / export and backup /
- * restore; and the
- * questions `confirm()` asks, above them.
+ * form (for a new connection or a saved one), import / export, Settings and
+ * backup / restore; and the questions `confirm()` asks, above them.
  */
 export function DialogHost() {
   const dialog = useUiStore((s) => s.connectionDialog);
   const setConnectionDialog = useUiStore((s) => s.setConnectionDialog);
-  const importExportOpen = useUiStore((s) => s.importExportOpen);
-  const setImportExportOpen = useUiStore((s) => s.setImportExportOpen);
+  const transfer = useUiStore((s) => s.transfer);
+  const closeTransfer = useUiStore((s) => s.closeTransfer);
+  const settingsSection = useUiStore((s) => s.settingsSection);
+  const setSettingsSection = useUiStore((s) => s.setSettingsSection);
   const dump = useDumpStore((s) => s.dialog);
   const closeDump = useDumpStore((s) => s.close);
   const close = () => setConnectionDialog(null);
@@ -39,8 +43,16 @@ export function DialogHost() {
   if (dialog?.mode === "new") content = <ConnectionForm onSaved={close} onCancel={close} />;
   else if (dialog?.mode === "edit") {
     content = <EditConnectionDialog key={dialog.id} id={dialog.id} onClose={close} />;
-  } else if (importExportOpen) {
-    content = <ConnectionsImportExportDialog onClose={() => setImportExportOpen(false)} />;
+  } else if (transfer) {
+    content = <ConnectionsImportExportDialog initial={transfer} onClose={closeTransfer} />;
+  } else if (settingsSection) {
+    content = (
+      <SettingsDialog
+        section={settingsSection}
+        onSectionChange={setSettingsSection}
+        onClose={() => setSettingsSection(null)}
+      />
+    );
   } else if (dump) {
     const Dialog = dump.kind === "backup" ? BackupDialog : RestoreDialog;
     content = <Dialog key={`${dump.kind}/${dump.connection.id}/${dump.database}`} dialog={dump} onClose={closeDump} />;

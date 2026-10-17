@@ -1,4 +1,4 @@
-import { Activity, ChartGantt, Copy, DatabaseBackup, DatabaseZap, FileCode, FileUp, FolderPlus, ListTree, Pencil, Plug, Puzzle, RefreshCcw, RefreshCw, SquareTerminal, Table, Trash2, Unplug, Upload, Users, Workflow, Wrench } from "lucide-react";
+import { Activity, ChartGantt, Copy, DatabaseBackup, DatabaseZap, Download, FileCode, FileUp, FolderPlus, ListTree, Pencil, Plug, Puzzle, RefreshCcw, RefreshCw, SquareTerminal, Table, Trash2, Unplug, Upload, Users, Workflow, Wrench } from "lucide-react";
 import { toast } from "sonner";
 import type { MenuEntry } from "@/components/common/ActionMenu";
 import { GENERATE_LABEL, MAINTENANCE_LABEL, generatableFor, maintenanceFor } from "@/lib/tableActions";
@@ -21,6 +21,7 @@ interface FolderMenu {
   onNewFolder: () => void;
   onRename: () => void;
   onDisconnectAll: () => void;
+  onExport: () => void;
   onDelete: () => void;
 }
 
@@ -28,6 +29,7 @@ export function folderMenuEntries(m: FolderMenu): MenuEntry[] {
   return [
     { label: "New folder inside", icon: FolderPlus, onSelect: m.onNewFolder },
     { label: "Rename folder", icon: Pencil, onSelect: m.onRename },
+    ...(m.hasConnections ? [{ label: "Export connections in folder...", icon: Download, onSelect: m.onExport }] : []),
     ...(m.connectedCount > 0
       ? [
           { separator: true } as const,
@@ -54,6 +56,7 @@ interface ConnectionMenu {
   onConnect: () => void;
   onDisconnect: () => void;
   onEdit: () => void;
+  onExport: () => void;
   onDelete: () => void;
   /** The server's roles; offered while connected. */
   onRoles?: () => void;
@@ -66,6 +69,7 @@ export function connectionMenuEntries(m: ConnectionMenu): MenuEntry[] {
       : { label: "Connect", icon: Plug, onSelect: m.onConnect },
     ...(m.connected && m.onRoles ? [{ label: "Roles…", icon: Users, onSelect: m.onRoles }] : []),
     { label: "Edit connection...", icon: Pencil, onSelect: m.onEdit },
+    { label: "Export connection...", icon: Download, onSelect: m.onExport },
     { separator: true },
     { label: "Delete connection...", icon: Trash2, danger: true, onSelect: m.onDelete },
   ];

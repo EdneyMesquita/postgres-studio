@@ -8,10 +8,12 @@ mod dump;
 mod error;
 mod export;
 mod logging;
+mod mcp_server;
 mod models;
 mod object_commands;
 mod paths;
 mod pg;
+mod psql;
 mod saved_scripts;
 mod script_file;
 mod secrets;
@@ -53,6 +55,17 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
         commands::browse_table,
         commands::count_rows,
         commands::run_sql,
+        commands::run_psql,
+        commands::psql_detect,
+        commands::mcp_set_config,
+        commands::mcp_status,
+        commands::mcp_token,
+        commands::mcp_regenerate_token,
+        commands::mcp_answer,
+        commands::mcp_disconnect_client,
+        commands::mcp_client_targets,
+        commands::mcp_register_client,
+        commands::mcp_unregister_client,
         commands::release_tab,
         commands::tab_transaction,
         commands::apply_edits,
@@ -199,6 +212,8 @@ fn setup<R: tauri::Runtime>(app: &mut tauri::App<R>) -> Result<(), Box<dyn std::
         std::sync::Arc::new(app.handle().clone()),
         workdir,
     ));
+    // Off until the frontend pushes settings that turn it on.
+    app.manage(mcp_server::McpServer::new(app.handle().clone()));
     Ok(())
 }
 

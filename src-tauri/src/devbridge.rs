@@ -42,6 +42,13 @@ const EVENTS: &[&str] = &[
     crate::dump::RESTORE_EVENT,
     crate::script_file::PROGRESS_EVENT,
     crate::csv_import::PROGRESS_EVENT,
+    crate::psql::LOG_EVENT,
+    crate::mcp_server::STATUS_EVENT,
+    crate::mcp_server::REQUEST_EVENT,
+    crate::mcp_server::REQUEST_CLOSED_EVENT,
+    crate::mcp_server::ACTIVITY_EVENT,
+    crate::mcp_server::ALWAYS_EVENT,
+    crate::mcp_server::CONNECTION_EVENT,
 ];
 
 /// Events waiting for the page's next `GET /events`.
@@ -87,6 +94,7 @@ pub fn run() {
         Arc::new(app.handle().clone()),
         dir.join("assistant"),
     ));
+    app.manage(crate::mcp_server::McpServer::new(app.handle().clone()));
     println!("devbridge config folder: {}", dir.display());
     let queue = Arc::new(EventQueue::default());
     for &name in EVENTS {

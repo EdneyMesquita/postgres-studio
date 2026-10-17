@@ -1,14 +1,14 @@
-import { ThemeSwitcher } from "../sidebar/ThemeSwitcher";
 import { AssistantToggle } from "../assistant/AssistantToggle";
 import { AppLogo } from "./AppLogo";
 import { Breadcrumb } from "./Breadcrumb";
 import { ConnectionWidget } from "./ConnectionWidget";
 import { SearchButton } from "./SearchButton";
+import { SettingsButton } from "./SettingsButton";
 import { useActiveConnection } from "./useActiveConnection";
 
 /**
  * The 40px bar under the OS title bar: connection and place on the left,
- * quick open in the middle, theme on the right. Its leading edge takes the
+ * quick open in the middle, the Assistant and Settings on the right. Its leading edge takes the
  * active connection's color, so production never looks like local.
  */
 export function MainToolbar() {
@@ -32,7 +32,7 @@ export function MainToolbar() {
       <SearchButton />
       <div className="flex min-w-0 items-center justify-end gap-1">
         <AssistantToggle />
-        <ThemeSwitcher />
+        <SettingsButton />
       </div>
     </header>
   );

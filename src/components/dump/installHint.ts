@@ -38,3 +38,27 @@ export function installHint(os: HostOs, major: number): InstallHint {
       };
   }
 }
+
+/**
+ * How to get psql for the console. Postgres Studio doesn't download it:
+ * no official build comes with a published checksum for every platform.
+ */
+export function psqlInstallHint(os: HostOs): InstallHint {
+  switch (os) {
+    case "linux":
+      return {
+        text: "Debian and Ubuntu. Fedora: sudo dnf install postgresql · Arch: sudo pacman -S postgresql-libs · apt.postgresql.org has every version.",
+        command: "sudo apt install postgresql-client",
+      };
+    case "mac":
+      return {
+        text: "Homebrew keeps libpq off the PATH; Postgres Studio looks in its folder anyway. Postgres.app works too.",
+        command: "brew install libpq",
+      };
+    case "windows":
+      return {
+        text: "Or run the installer from postgresql.org and keep its Command Line Tools; the server itself isn't needed.",
+        command: "winget install PostgreSQL.PostgreSQL.18",
+      };
+  }
+}

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { listen } from "@tauri-apps/api/event";
 import { api } from "../lib/tauri";
 import { useConnectionsStore } from "./connectionsStore";
 import { selectActiveTab, useSessionsStore } from "./sessionsStore";
@@ -7,24 +8,29 @@ import { useUiStore } from "./uiStore";
 import { useExplorerStore } from "./explorerStore";
 import { clearColumnCache } from "../lib/sqlCompletion";
 import { useGraphStore } from "./graphStore";
-import type { ExplainResult, SqlRun, TxState } from "../types/pg";
+import type { ExplainResult, LogLine, SqlRun, TxState } from "../types/pg";
+import { engineFor, useSettingsStore, type ConsoleEngine } from "./settingsStore";
 
 /** Quotes an identifier only when it needs it. */
 export function quoteIdent(name: string): string {
   return /^[a-z_][a-z0-9_$]*$/.test(name) ? name : `"${name.replace(/"/g, '""')}"`;
 }
 
-/** The SQL a console starts with: a look at its table, or a hint. */
-export function defaultScript(tab: Tab): string {
+/** The SQL a console starts with: a look at its table, or a hint for its engine. */
+export function defaultScript(tab: Tab, engine: ConsoleEngine = engineFor(tab.id)): string {
+  const hint =
+    engine === "psql"
+      ? `-- Runs on ${tab.database} with psql. Ctrl+Enter runs the whole script; select text to run just that. \\d lists tables.`
+      : `-- Runs on ${tab.database}. Ctrl+Enter runs the statement at the caret; select text to run just that.`;
   if (tab.kind === "table") {
     const name = `${quoteIdent(tab.schema)}.${quoteIdent(tab.table)}`;
-    return `-- Runs on ${tab.database}. Ctrl+Enter runs the statement at the caret; select text to run just that.
+    return `${hint}
 SELECT *
 FROM ${name}
 LIMIT 100;
 `;
   }
-  return `-- Runs on ${tab.database}. Ctrl+Enter runs the statement at the caret; select text to run just that.
+  return `${hint}
 
 `;
 }
@@ -50,6 +56,8 @@ export interface ConsoleSession {
   txMode: TxMode;
   /** Where the text that ran started in the editor, for mapping error positions. */
   ranFrom: number;
+  /** psql's lines so far, while psql runs. */
+  liveLog: LogLine[];
 }
 
 const blankSession: ConsoleSession = {
@@ -65,7 +73,37 @@ const blankSession: ConsoleSession = {
   tx: "idle",
   txMode: "auto",
   ranFrom: 0,
+  liveLog: [],
 };
+
+/** psql's lines, waiting to be added to their console in one go. */
+const pendingLines = new Map<string, LogLine[]>();
+let flushTimer: ReturnType<typeof setTimeout> | null = null;
+let listening: Promise<unknown> | null = null;
+
+/** Starts taking psql's lines; they reach the console whose run they belong to. */
+function listenToPsql() {
+  listening ??= listen<{ executionId: string; line: LogLine }>("psql-log", ({ payload }) => {
+    const lines = pendingLines.get(payload.executionId) ?? [];
+    lines.push(payload.line);
+    pendingLines.set(payload.executionId, lines);
+    // Lines can come by the thousand: the console redraws a few times a second.
+    flushTimer ??= setTimeout(() => {
+      flushTimer = null;
+      const consoles = { ...useConsoleStore.getState().consoles };
+      let changed = false;
+      for (const [key, c] of Object.entries(consoles)) {
+        const lines = c.executionId ? pendingLines.get(c.executionId) : undefined;
+        if (!lines) continue;
+        consoles[key] = { ...c, liveLog: [...c.liveLog, ...lines] };
+        changed = true;
+      }
+      pendingLines.clear();
+      if (changed) useConsoleStore.setState({ consoles });
+    }, 120);
+  });
+  return listening;
+}
 
 /**
  * The console on screen - a console tab's, or a table tab's SQL view - with
@@ -136,14 +174,24 @@ export const useConsoleStore = create<ConsoleState>((set, get) => {
     run: async (key, sessionId, database, sql, caret, from = 0) => {
       const executionId = crypto.randomUUID();
       const before = get().consoles[key] ?? blankSession;
-      patch(key, { running: true, executionId, error: null, ranFrom: from });
+      const settings = useSettingsStore.getState();
+      const psql = engineFor(key) === "psql";
+      if (psql) await listenToPsql();
+      // psql's output comes line by line: the console shows it as it comes.
+      patch(key, { running: true, executionId, error: null, ranFrom: from, liveLog: [], ...(psql ? { output: { kind: "messages" } } : {}) });
       const stillCurrent = () => get().consoles[key]?.executionId === executionId;
       try {
-        // Manual mode opens a transaction before the first statement.
-        if (before.txMode === "manual" && before.tx === "idle") {
-          await api.runSql(sessionId, database, key, "BEGIN", null, 1, null);
+        let run: SqlRun;
+        if (psql) {
+          // psql runs the whole text it gets: the selection, or the script.
+          run = await api.runPsql(sessionId, database, sql, settings.consoleRowLimit, executionId, settings.psql);
+        } else {
+          // Manual mode opens a transaction before the first statement.
+          if (before.txMode === "manual" && before.tx === "idle") {
+            await api.runSql(sessionId, database, key, "BEGIN", null, 1, null);
+          }
+          run = await api.runSql(sessionId, database, key, sql, caret, settings.consoleRowLimit, executionId);
         }
-        const run = await api.runSql(sessionId, database, key, sql, caret, 1000, executionId);
         if (!stillCurrent()) return;
         const failed = run.results.findIndex((r) => r.error);
         const firstWithRows = run.results.findIndex((r) => r.returnsRows);
@@ -155,7 +203,8 @@ export const useConsoleStore = create<ConsoleState>((set, get) => {
               : run.results.length > 0
                 ? { kind: "result", index: run.results.length - 1 }
                 : { kind: "messages" };
-        patch(key, { running: false, executionId: null, run, output, tx: run.transaction });
+        // psql's own session ended with its run; the tab's stays as it was.
+        patch(key, { running: false, executionId: null, run, output, tx: psql ? before.tx : run.transaction, liveLog: [] });
         refreshExplorer(key, run);
         if (GRAPH_CHANGE.test(sql)) {
           const tab = useSessionsStore.getState().tabs.find((t) => t.id === key);
@@ -216,4 +265,5 @@ useSessionsStore.subscribe((state, prev) => {
   const kept = { ...consoles };
   for (const key of stale) delete kept[key];
   useConsoleStore.setState({ consoles: kept });
+  for (const key of stale) useSettingsStore.getState().forgetTabEngine(key);
 });

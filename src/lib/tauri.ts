@@ -47,6 +47,7 @@ import type {
   AssistantStartInput,
   DetectedAgent,
 } from "../types/assistant";
+import type { McpClientTarget, McpConfig, McpRequestChoice, McpStatus } from "../types/mcp";
 
 export const api = {
   listConnectionProfiles: () => invoke<ConnectionProfileMeta[]>("list_connection_profiles"),
@@ -70,8 +71,9 @@ export const api = {
   /** Opens the app's log folder in the file manager; resolves to its path. */
   openLogDir: () => invoke<string>("open_log_dir"),
 
-  exportConnections: (destPath: string, includeSecrets: boolean) =>
-    invoke<ConnectionsExportSummary>("export_connections", { destPath, includeSecrets }),
+  /** Exports the connections in `ids` (in that order), or every saved one when null. */
+  exportConnections: (destPath: string, includeSecrets: boolean, ids: string[] | null = null) =>
+    invoke<ConnectionsExportSummary>("export_connections", { destPath, includeSecrets, ids }),
 
   previewConnectionsImport: (srcPath: string) =>
     invoke<ConnectionImportPreview[]>("preview_connections_import", { srcPath }),
@@ -134,6 +136,13 @@ export const api = {
     rowLimit: number | null,
     executionId: string | null,
   ) => invoke<SqlRun>("run_sql", { sessionId, database, tabId, sql, caret, rowLimit, executionId }),
+
+  /** Runs `sql` with psql on its own connection; its lines arrive as `psql-log` events. */
+  runPsql: (sessionId: string, database: string, sql: string, rowLimit: number, executionId: string, options: PsqlOptions) =>
+    invoke<SqlRun>("run_psql", { sessionId, database, sql, rowLimit, executionId, options }),
+
+  /** Finds psql: the picked executable, else the newest one on this computer. */
+  psqlDetect: (customPath: string | null) => invoke<PsqlInfo>("psql_detect", { customPath }),
 
   /** Closes the tab's own connections; an open transaction rolls back. */
   releaseTab: (sessionId: string, tabId: string) => invoke<void>("release_tab", { sessionId, tabId }),
@@ -268,9 +277,21 @@ export const api = {
     options: CsvOptions,
     executionId: string,
   ) => invoke<CsvImportSummary>("import_csv", { sessionId, database, schema, table, path, mapping, options, executionId }),
+
+  /** Applies the MCP server's settings: starts, stops or restarts it. */
+  mcpSetConfig: (config: McpConfig) => invoke<McpStatus>("mcp_set_config", { config }),
+  mcpStatus: () => invoke<McpStatus>("mcp_status"),
+  mcpToken: () => invoke<string>("mcp_token"),
+  mcpRegenerateToken: () => invoke<string>("mcp_regenerate_token"),
+  mcpAnswer: (requestId: string, choice: McpRequestChoice) =>
+    invoke<void>("mcp_answer", { requestId, choice }),
+  mcpDisconnectClient: (clientId: string) => invoke<void>("mcp_disconnect_client", { clientId }),
+  mcpClientTargets: () => invoke<McpClientTarget[]>("mcp_client_targets"),
+  mcpRegisterClient: (id: string) => invoke<McpClientTarget>("mcp_register_client", { id }),
+  mcpUnregisterClient: (id: string) => invoke<McpClientTarget>("mcp_unregister_client", { id }),
 };
 
-import type { GraphCatalog } from "../types/pg";
+import type { GraphCatalog, PsqlInfo, PsqlOptions } from "../types/pg";
 
 /** Graph and vector features (Apache AGE, pgvector, SQL/PGQ). */
 export const graphApi = {

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -46,6 +47,41 @@ impl SidebarLayoutStore {
     }
 }
 
+/// The folder each connection sits in, as "Parent / Child", keyed by
+/// connection id; connections at the top level are left out.
+pub fn folder_paths(layout: &Value) -> HashMap<String, String> {
+    fn walk(nodes: &Value, parent: Option<&str>, out: &mut HashMap<String, String>) {
+        for node in nodes.as_array().into_iter().flatten() {
+            let Some(id) = node.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            match node.get("type").and_then(Value::as_str) {
+                Some("connection") => {
+                    if let Some(path) = parent {
+                        out.insert(id.to_string(), path.to_string());
+                    }
+                }
+                Some("folder") => {
+                    let name = node.get("name").and_then(Value::as_str).unwrap_or_default();
+                    let path = match parent {
+                        Some(parent) => format!("{parent} / {name}"),
+                        None => name.to_string(),
+                    };
+                    walk(
+                        node.get("children").unwrap_or(&Value::Null),
+                        Some(&path),
+                        out,
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = HashMap::new();
+    walk(layout.get("root").unwrap_or(&Value::Null), None, &mut out);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,6 +114,24 @@ mod tests {
         assert_eq!(store.get().unwrap(), layout);
         assert!(!dir.join("sidebar_layout.json.tmp").exists());
         fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn names_the_folder_path_of_each_connection() {
+        let layout = json!({ "version": 1, "root": [
+            { "type": "connection", "id": "top" },
+            { "type": "folder", "id": "f1", "name": "Remote", "children": [
+                { "type": "connection", "id": "c1" },
+                { "type": "folder", "id": "f2", "name": "EU", "children": [
+                    { "type": "connection", "id": "c2" }
+                ] }
+            ] }
+        ] });
+        let paths = folder_paths(&layout);
+        assert_eq!(paths.get("c1").map(String::as_str), Some("Remote"));
+        assert_eq!(paths.get("c2").map(String::as_str), Some("Remote / EU"));
+        assert!(!paths.contains_key("top"));
+        assert!(folder_paths(&Value::Null).is_empty());
     }
 
     #[test]

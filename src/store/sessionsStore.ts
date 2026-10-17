@@ -3,6 +3,7 @@ import { api } from "../lib/tauri";
 import { sessionIdFor } from "./connectionsStore";
 import { ident as quoteIdent } from "../lib/editSql";
 import type { BrowseResult, CellValue, RelKind, Row, RowEdit, TableInfo } from "../types/pg";
+import { useSettingsStore } from "./settingsStore";
 
 /** The connection a tab was opened on, as shown on the tab. */
 export interface TabConnection {
@@ -50,6 +51,11 @@ export interface TableTab {
   selectedRow: number | null;
   /** The WHERE field the Assistant last wrote, until the user edits it. */
   assistantSource?: "where" | null;
+  /**
+   * Reopened from the last session and not connected yet: it connects, and
+   * runs its query, when it's opened.
+   */
+  dormant?: boolean;
 }
 
 /** A SQL console on its own, bound to one database of one connection. */
@@ -62,6 +68,8 @@ export interface ConsoleTab {
   number: number;
   /** Opened with SQL the Assistant wrote. */
   fromAssistant?: boolean;
+  /** Reopened from the last session and not connected yet. */
+  dormant?: boolean;
 }
 
 /** A schema's tables and the foreign keys between them. */
@@ -73,6 +81,8 @@ export interface DiagramTab {
   schema: string;
   /** The table selected when it opened, if any. */
   focus: string | null;
+  /** Reopened from the last session and not connected yet. */
+  dormant?: boolean;
 }
 
 /** The server's sessions, locks and TimescaleDB jobs, one tab per connection and database. */
@@ -83,6 +93,8 @@ export interface ActivityTab {
   database: string;
   /** The view it opens on; the tab keeps the one the user switched to. */
   view?: "sessions" | "locks" | "jobs";
+  /** Reopened from the last session and not connected yet. */
+  dormant?: boolean;
 }
 
 export type Tab = TableTab | ConsoleTab | DiagramTab | ActivityTab;
@@ -143,6 +155,10 @@ interface SessionsState {
   closeConnection: (connectionId: string) => void;
   /** A connection was renamed or re-pointed: its tabs show the new name. */
   renameConnection: (connection: TabConnection) => void;
+  /** Puts back the last session's tabs, dormant, before any tab is open. */
+  restoreTabs: (tabs: Tab[], activeTabId: string | null) => void;
+  /** A dormant tab's connection is live: a table tab runs its query, the others just show. */
+  wakeTab: (sessionId: string, id: string) => Promise<void>;
 }
 
 /** Unique per relation per connection. */
@@ -162,7 +178,7 @@ function nextConsoleNumber(tabs: Tab[], connectionId: string, database: string):
   return Math.max(0, ...numbers) + 1;
 }
 
-function newTableTab(
+export function newTableTab(
   connection: TabConnection,
   database: string,
   schema: string,
@@ -183,7 +199,7 @@ function newTableTab(
     page: null,
     whereText: where,
     orderByText: "",
-    limit: 100,
+    limit: useSettingsStore.getState().pageSize,
     offset: 0,
     loading: false,
     error: null,
@@ -528,6 +544,27 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
             : t,
         ),
       })),
+
+    restoreTabs: (tabs, activeTabId) =>
+      set((s) =>
+        s.tabs.length > 0
+          ? s
+          : { tabs, activeTabId: tabs.some((t) => t.id === activeTabId) ? activeTabId : (tabs[0]?.id ?? null) },
+      ),
+
+    wakeTab: async (sessionId, id) => {
+      const tab = get().tabs.find((t) => t.id === id);
+      if (!tab?.dormant) return;
+      set((s) => ({ tabs: s.tabs.map((t) => (t.id === id ? { ...t, dormant: false } : t)) }));
+      if (tab.kind !== "table") return;
+      patchTab(id, { loading: true });
+      await get().loadInfo(sessionId, id);
+      const info = tableTab(id)?.info;
+      if (info && info.rowKey.length > 0 && !tableTab(id)?.orderByText) {
+        patchTab(id, { orderByText: info.rowKey.map(quoteIdent).join(", ") });
+      }
+      await get().runQuery(sessionId, id);
+    },
 
     closeConnection: (connectionId) =>
       set((s) => {

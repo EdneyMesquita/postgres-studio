@@ -3,27 +3,25 @@ import { persist } from "zustand/middleware";
 
 export type MainTab = "data" | "structure" | "sql";
 
-/**
- * How query and script results are rendered: a document grid with the
- * selected document in an inspector beside it, a JSON tree, or raw JSON.
- */
-export type ResultView = "grid" | "tree" | "json";
-
 /** Which tool window the side panel shows, or null when it's hidden. */
 export type SidePanel = "explorer" | "scripts" | null;
 
 /** The connection dialog: a new connection, or editing a saved one. */
 export type ConnectionDialog = { mode: "new" } | { mode: "edit"; id: string } | null;
 
+/** The import / export dialog: which side, and the connections an export starts with. */
+export type TransferDialog = { tab: "export" | "import"; ids: string[] | null };
+
+/** Settings' sections. */
+export type SettingsSection = "general" | "results" | "console" | "connections" | "assistant" | "mcp";
+
 /** The console's editor and output: side by side, or editor above output. */
 export type ConsoleLayout = "side" | "stacked";
 
 interface UiState {
-  /** Each collection tab's view (Documents, Indexes, Console); unset is Documents. */
+  /** Each table tab's view (Data, Structure, SQL); unset is Data. */
   mainTabs: Record<string, MainTab>;
   setMainTab: (tabId: string, view: MainTab) => void;
-  resultView: ResultView;
-  setResultView: (view: ResultView) => void;
   consoleLayout: ConsoleLayout;
   setConsoleLayout: (layout: ConsoleLayout) => void;
   /** The editor's share of the console, remembered per layout. */
@@ -36,17 +34,32 @@ interface UiState {
   /** Shows a tool window; showing the one already open hides the panel. */
   toggleSidePanel: (panel: Exclude<SidePanel, null>) => void;
   setSidePanel: (panel: SidePanel) => void;
-  /** The inspector beside the document grid, in px. */
+  /** The row inspector beside the grid, in px. */
   inspectorWidth: number;
   setInspectorWidth: (width: number) => void;
   connectionDialog: ConnectionDialog;
   setConnectionDialog: (dialog: ConnectionDialog) => void;
   /** The import / export connections dialog. */
-  importExportOpen: boolean;
-  setImportExportOpen: (open: boolean) => void;
+  transfer: TransferDialog | null;
+  /** Opens it on `tab`; an export starts with `ids` ticked (all when null). */
+  openTransfer: (tab: TransferDialog["tab"], ids?: string[] | null) => void;
+  closeTransfer: () => void;
+  /** The Settings dialog's section, or null when it's closed. */
+  settingsSection: SettingsSection | null;
+  setSettingsSection: (section: SettingsSection | null) => void;
   /** The Ctrl+K quick-open palette. */
   paletteOpen: boolean;
   setPaletteOpen: (open: boolean) => void;
+}
+
+/**
+ * Saved UI state from an older version. Results only ever show as a grid:
+ * the result view version 1 kept (and nothing read) is dropped.
+ */
+export function migrateUi(state: unknown): Record<string, unknown> {
+  const s = { ...(state as Record<string, unknown>) };
+  delete s.resultView;
+  return s;
 }
 
 export const DEFAULT_CONSOLE_SPLIT = 0.6;
@@ -58,8 +71,6 @@ export const useUiStore = create<UiState>()(
     (set) => ({
       mainTabs: {},
       setMainTab: (tabId, view) => set((s) => ({ mainTabs: { ...s.mainTabs, [tabId]: view } })),
-      resultView: "grid",
-      setResultView: (view) => set({ resultView: view }),
       consoleLayout: "stacked",
       setConsoleLayout: (layout) => set({ consoleLayout: layout }),
       consoleSplit: { side: DEFAULT_CONSOLE_SPLIT, stacked: DEFAULT_CONSOLE_SPLIT },
@@ -74,8 +85,11 @@ export const useUiStore = create<UiState>()(
       setInspectorWidth: (width) => set({ inspectorWidth: width }),
       connectionDialog: null,
       setConnectionDialog: (dialog) => set({ connectionDialog: dialog }),
-      importExportOpen: false,
-      setImportExportOpen: (open) => set({ importExportOpen: open }),
+      transfer: null,
+      openTransfer: (tab, ids = null) => set({ transfer: { tab, ids }, settingsSection: null }),
+      closeTransfer: () => set({ transfer: null }),
+      settingsSection: null,
+      setSettingsSection: (section) => set({ settingsSection: section }),
       paletteOpen: false,
       setPaletteOpen: (open) => set({ paletteOpen: open }),
     }),
@@ -88,15 +102,9 @@ export const useUiStore = create<UiState>()(
         consoleSplit: s.consoleSplit,
         sidebarWidth: s.sidebarWidth,
         inspectorWidth: s.inspectorWidth,
-        resultView: s.resultView,
       }),
-      version: 1,
-      // Views from before the redesign: "table" became the grid.
-      migrate: (state) => {
-        const s = state as { resultView?: string };
-        if (s.resultView !== "tree" && s.resultView !== "json") s.resultView = "grid";
-        return s as never;
-      },
+      version: 2,
+      migrate: (state) => migrateUi(state) as never,
     },
   ),
 );

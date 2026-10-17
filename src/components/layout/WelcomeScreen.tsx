@@ -17,7 +17,7 @@ export function WelcomeScreen() {
   const setConnectionDialog = useUiStore((s) => s.setConnectionDialog);
   const setSidePanel = useUiStore((s) => s.setSidePanel);
   const setPaletteOpen = useUiStore((s) => s.setPaletteOpen);
-  const setImportExportOpen = useUiStore((s) => s.setImportExportOpen);
+  const openTransfer = useUiStore((s) => s.openTransfer);
 
   async function connect(id: string) {
     await useConnectionsStore.getState().connect(id);
@@ -48,7 +48,7 @@ export function WelcomeScreen() {
             >
               New connection
             </WelcomeAction>
-            <WelcomeAction icon={<Upload />} onClick={() => setImportExportOpen(true)}>
+            <WelcomeAction icon={<Upload />} onClick={() => openTransfer("import")}>
               Import connections (pgAdmin servers.json)…
             </WelcomeAction>
             <WelcomeAction icon={<FileCode />} onClick={() => setSidePanel("scripts")}>

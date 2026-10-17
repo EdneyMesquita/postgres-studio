@@ -14,11 +14,12 @@ use crate::connections_io;
 use crate::error::{AppError, AppResult};
 use crate::export;
 use crate::logging::{self, logged, Op};
+use crate::mcp_server::{ClientTarget, McpConfig, McpServer, McpStatus, RequestChoice};
 use crate::models::{
     validate_color, ConnectionHandle, ConnectionImportPreview, ConnectionProfile,
     ConnectionProfileInput, ConnectionProfileMeta, ConnectionSource, ConnectionTestResult,
     ConnectionsExportSummary, ConnectionsImportSummary, ExportFormat, ExportSummary,
-    SecretBackendInfo, SecretBackendKind, SslMode,
+    ImportedConnection, SecretBackendInfo, SecretBackendKind, SslMode,
 };
 use crate::pg::catalog::{self, DatabaseInfo, SchemaInfo, SchemaObjects, TableInfo};
 use crate::pg::connect::{strip_tls_params, uri_param, Canceller};
@@ -234,14 +235,24 @@ pub async fn delete_connection_profile(state: State<'_, AppState>, id: String) -
 #[tauri::command]
 pub async fn export_connections(
     state: State<'_, AppState>,
+    layout: State<'_, SidebarLayoutStore>,
     dest_path: String,
     include_secrets: bool,
+    ids: Option<Vec<String>>,
 ) -> AppResult<ConnectionsExportSummary> {
-    let profiles = state.connection_store.list();
+    let mut profiles = state.connection_store.list();
+    // Only the chosen ones, in the order given, when the user picked;
+    // every saved one otherwise.
+    if let Some(ids) = &ids {
+        profiles.retain(|p| ids.contains(&p.id));
+        profiles.sort_by_key(|p| ids.iter().position(|id| id == &p.id));
+    }
+    let folders = crate::sidebar_layout::folder_paths(&layout.get().unwrap_or_default());
     let exported = logged(
         "export_connections",
         connections_io::export_connections(
             &profiles,
+            &folders,
             include_secrets,
             state.secret_store.as_ref(),
             std::path::Path::new(&dest_path),
@@ -276,7 +287,8 @@ fn preview_import(state: &AppState, raw: &str) -> AppResult<Vec<ConnectionImport
         .into_iter()
         .map(|p| p.name)
         .collect();
-    Ok(connections_io::parse_connections_file(raw)?
+    let (format, entries) = connections_io::parse_connections_file_with_format(raw)?;
+    Ok(entries
         .into_iter()
         .enumerate()
         .map(|(index, entry)| match entry {
@@ -287,6 +299,8 @@ fn preview_import(state: &AppState, raw: &str) -> AppResult<Vec<ConnectionImport
                 name: entry.input.name,
                 warning: entry.warning,
                 error: None,
+                folder: entry.folder,
+                format,
             },
             Err(message) => ConnectionImportPreview {
                 index,
@@ -295,6 +309,8 @@ fn preview_import(state: &AppState, raw: &str) -> AppResult<Vec<ConnectionImport
                 warning: None,
                 error: Some(message),
                 exists: false,
+                folder: None,
+                format,
             },
         })
         .collect())
@@ -344,6 +360,7 @@ async fn import_file(
     let mut imported = 0;
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
+    let mut created = Vec::new();
     for (index, entry) in parsed.into_iter().enumerate() {
         if selected.is_some_and(|picked| !picked.contains(&index)) {
             continue;
@@ -358,6 +375,7 @@ async fn import_file(
         if let Some(warning) = entry.warning {
             warnings.push(format!("{}: {warning}", entry.input.name));
         }
+        let folder = entry.folder;
         let profile = materialize_profile(state, entry.input).await?;
         let saved = state.connection_store.upsert(profile)?;
         // Whether a password came along is what "imported connections
@@ -370,12 +388,17 @@ async fn import_file(
             yes_no(saved.has_password)
         );
         imported += 1;
+        created.push(ImportedConnection {
+            id: saved.id,
+            folder,
+        });
     }
 
     Ok(ConnectionsImportSummary {
         imported,
         errors,
         warnings,
+        created,
     })
 }
 
@@ -836,6 +859,54 @@ pub async fn run_sql(
         Ok(run)
     })
     .await
+}
+
+/// Runs a console's SQL through psql instead of the built-in engine: the
+/// same results, plus psql's output streamed as `psql-log` events. The
+/// script and what it prints stay out of the log, as with `run_sql`.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn run_psql<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    state: State<'_, AppState>,
+    session_id: String,
+    database: String,
+    sql: String,
+    row_limit: Option<usize>,
+    execution_id: String,
+    options: crate::psql::PsqlOptions,
+) -> AppResult<SqlRun> {
+    let op = Op::new("sql (psql)", &database, None);
+    on_session(&state, &session_id, op, async |s| {
+        let cancel = track_task(&state, &execution_id, None);
+        let emit_id = execution_id.clone();
+        let result = crate::psql::run(
+            s,
+            &database,
+            &sql,
+            &options,
+            row_limit.unwrap_or(1000).clamp(1, 100_000),
+            &execution_id,
+            &cancel,
+            |line| {
+                let _ = tauri::Emitter::emit(
+                    &app,
+                    crate::psql::LOG_EVENT,
+                    serde_json::json!({ "executionId": emit_id, "line": line }),
+                );
+            },
+        )
+        .await;
+        forget_task(&state, &execution_id);
+        result
+    })
+    .await
+}
+
+/// Where psql is: the picked executable, else the newest one found.
+#[tauri::command]
+pub async fn psql_detect(custom_path: Option<String>) -> crate::psql::PsqlInfo {
+    crate::psql::detect(custom_path.as_deref()).await
 }
 
 /// Closes a tab's own connection; an open transaction on it rolls back.
@@ -1426,4 +1497,56 @@ mod tests {
         assert!(state.connection_store.list().is_empty());
         std::fs::remove_dir_all(dir).ok();
     }
+}
+
+#[tauri::command]
+pub async fn mcp_set_config(mcp: State<'_, McpServer>, config: McpConfig) -> AppResult<McpStatus> {
+    logged("mcp_set_config", mcp.set_config(config).await)
+}
+
+#[tauri::command]
+pub fn mcp_status(mcp: State<McpServer>) -> McpStatus {
+    mcp.status()
+}
+
+#[tauri::command]
+pub fn mcp_token(mcp: State<McpServer>) -> AppResult<String> {
+    logged("mcp_token", mcp.token())
+}
+
+#[tauri::command]
+pub fn mcp_regenerate_token(mcp: State<McpServer>) -> AppResult<String> {
+    logged("mcp_regenerate_token", mcp.regenerate_token())
+}
+
+#[tauri::command]
+pub fn mcp_answer(
+    mcp: State<McpServer>,
+    request_id: String,
+    choice: RequestChoice,
+) -> AppResult<()> {
+    mcp.answer(&request_id, choice)
+}
+
+#[tauri::command]
+pub fn mcp_disconnect_client(mcp: State<McpServer>, client_id: String) -> AppResult<()> {
+    mcp.disconnect_client(&client_id)
+}
+
+#[tauri::command]
+pub async fn mcp_client_targets(mcp: State<'_, McpServer>) -> AppResult<Vec<ClientTarget>> {
+    Ok(mcp.client_targets().await)
+}
+
+#[tauri::command]
+pub async fn mcp_register_client(mcp: State<'_, McpServer>, id: String) -> AppResult<ClientTarget> {
+    logged("mcp_register_client", mcp.register_client(&id).await)
+}
+
+#[tauri::command]
+pub async fn mcp_unregister_client(
+    mcp: State<'_, McpServer>,
+    id: String,
+) -> AppResult<ClientTarget> {
+    logged("mcp_unregister_client", mcp.unregister_client(&id).await)
 }

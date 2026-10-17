@@ -72,6 +72,9 @@ fn install_patterns() -> Vec<&'static str> {
             "/Applications/Postgres.app/Contents/Versions/*/bin",
             "/opt/homebrew/opt/postgresql@*/bin",
             "/usr/local/opt/postgresql@*/bin",
+            // `brew install libpq` is keg-only: its tools never reach a PATH.
+            "/opt/homebrew/opt/libpq/bin",
+            "/usr/local/opt/libpq/bin",
             // A GUI app's PATH leaves these out.
             "/opt/homebrew/bin",
             "/usr/local/bin",
@@ -157,7 +160,7 @@ fn exe_name(name: &str) -> String {
     }
 }
 
-fn hide_window(_command: &mut Command) {
+pub(crate) fn hide_window(_command: &mut Command) {
     #[cfg(windows)]
     {
         // CREATE_NO_WINDOW: no console window flashing up for each run.
@@ -165,7 +168,7 @@ fn hide_window(_command: &mut Command) {
     }
 }
 
-async fn probe(path: PathBuf) -> Option<PgTool> {
+pub(crate) async fn probe(path: PathBuf) -> Option<PgTool> {
     let mut command = Command::new(&path);
     command
         .arg("--version")
@@ -185,15 +188,19 @@ async fn probe(path: PathBuf) -> Option<PgTool> {
     })
 }
 
-/// The folders to look in: the override, the PATH, the usual installs.
-fn search_dirs() -> Vec<PathBuf> {
+/// The folders to look in: the override, the PATH (merged with the login
+/// shell's, which a GUI app doesn't inherit), the usual installs.
+async fn search_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(dir) = std::env::var_os(BIN_OVERRIDE) {
         dirs.push(PathBuf::from(dir));
     }
-    if let Some(path) = std::env::var_os("PATH") {
-        dirs.extend(std::env::split_paths(&path));
-    }
+    dirs.extend(
+        crate::assistant::detect::search_dirs()
+            .await
+            .iter()
+            .cloned(),
+    );
     for pattern in install_patterns() {
         dirs.extend(expand(pattern));
     }
@@ -208,7 +215,7 @@ fn search_dirs() -> Vec<PathBuf> {
 }
 
 pub async fn find_tools() -> PgToolsInfo {
-    let dirs = search_dirs();
+    let dirs = search_dirs().await;
     let mut found = Vec::new();
     for name in ["pg_dump", "pg_restore", "psql"] {
         let mut candidates: Vec<PathBuf> = Vec::new();
@@ -351,7 +358,7 @@ impl PgConn {
 }
 
 /// Variables that would steer a tool somewhere else than the session.
-const STRAY_ENV: [&str; 8] = [
+pub(crate) const STRAY_ENV: [&str; 8] = [
     "PGSERVICE",
     "PGSERVICEFILE",
     "PGPASSFILE",

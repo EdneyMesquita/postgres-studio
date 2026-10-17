@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
-use super::http::{self, Head, ReadError, Response};
+use super::http::{self, bearer, host_allowed, origin_allowed, Head, ReadError, Response};
 use super::{tools, AgentSession, Inner};
 use crate::error::{AppError, AppResult};
 
@@ -105,41 +105,6 @@ fn read_error_response(error: ReadError) -> Response {
         ReadError::Malformed(why) => Response::text(400, why),
         ReadError::Closed | ReadError::Io => Response::empty(400),
     }
-}
-
-/// Whether a `Host` header names this server: 127.0.0.1 or localhost, on
-/// its port.
-fn host_allowed(host: Option<&str>, port: u16) -> bool {
-    let Some(host) = host else {
-        return false;
-    };
-    let (name, host_port) = match host.rsplit_once(':') {
-        Some((name, p)) => (name, Some(p)),
-        None => (host, None),
-    };
-    let name_ok = name == "127.0.0.1" || name.eq_ignore_ascii_case("localhost");
-    let port_ok = host_port.is_none_or(|p| p.parse::<u16>().ok() == Some(port));
-    name_ok && port_ok
-}
-
-/// Browsers send `Origin`; the CLIs don't. One that's present must be
-/// this server's own.
-fn origin_allowed(origin: Option<&str>, port: u16) -> bool {
-    match origin {
-        None => true,
-        Some(origin) => origin
-            .strip_prefix("http://")
-            .is_some_and(|host| host_allowed(Some(host), port)),
-    }
-}
-
-fn bearer(head: &Head) -> Option<&str> {
-    let value = head.header("authorization")?.trim();
-    let (scheme, token) = value.split_once(' ')?;
-    scheme
-        .eq_ignore_ascii_case("bearer")
-        .then(|| token.trim())
-        .filter(|t| !t.is_empty())
 }
 
 async fn handle(inner: &Arc<Inner>, port: u16, head: &Head, body: &[u8]) -> Response {

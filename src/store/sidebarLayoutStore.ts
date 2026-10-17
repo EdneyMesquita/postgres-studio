@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { api } from "../lib/tauri";
 import {
   canMove,
+  connectionIds as connectionIdsOf,
   containsConnections,
   findFolder,
   insertNode,
@@ -12,6 +13,10 @@ import {
   updateFolder,
 } from "../lib/sidebarTree";
 import type { DropTarget, SidebarLayout, TreeNode } from "../lib/sidebarTree";
+import type { ImportedConnection } from "../types/connection";
+
+/** Where imported connections go: a new folder, an existing one, or the top level. */
+export type ImportTarget = { kind: "new"; name: string } | { kind: "folder"; id: string } | { kind: "root" };
 
 interface SidebarLayoutState {
   root: TreeNode[];
@@ -30,6 +35,13 @@ interface SidebarLayoutState {
   deleteFolder: (id: string) => void;
   toggleFolder: (id: string) => void;
   move: (id: string, target: DropTarget) => void;
+  /**
+   * Puts just-imported connections in a folder (a new one named `name`, or
+   * `id`) or at the top level, after what's already there. A connection
+   * that came from a folder ("Parent / Child") goes in that folder inside
+   * the target, made if it isn't there.
+   */
+  placeConnections: (connections: ImportedConnection[], target: ImportTarget) => void;
 }
 
 let loading: Promise<void> | null = null;
@@ -103,6 +115,40 @@ export const useSidebarLayoutStore = create<SidebarLayoutState>((set, get) => {
     toggleFolder: (id) => {
       const folder = findFolder(get().root, id);
       if (folder) commit(updateFolder(get().root, id, { collapsed: !folder.collapsed }));
+    },
+
+    placeConnections: (connections, target) => {
+      const ids = connections.map((c) => c.id);
+      let root = reconcile(get().root, [...ids, ...connectionIdsOf(get().root)]);
+      let baseId: string | null = null;
+      if (target.kind === "new") {
+        baseId = crypto.randomUUID();
+        root = insertNode(root, { parentId: null, index: root.length }, {
+          type: "folder",
+          id: baseId,
+          name: target.name,
+          children: [],
+        });
+      } else if (target.kind === "folder" && findFolder(root, target.id)) {
+        baseId = target.id;
+      }
+      for (const { id, folder } of connections) {
+        let parentId = baseId;
+        for (const name of (folder ?? "").split(" / ").map((n) => n.trim()).filter(Boolean)) {
+          const siblings = parentId ? (findFolder(root, parentId)?.children ?? []) : root;
+          const existing = siblings.find((n) => n.type === "folder" && n.name === name);
+          if (existing) {
+            parentId = existing.id;
+            continue;
+          }
+          const folderId = crypto.randomUUID();
+          root = insertNode(root, { parentId, index: siblings.length }, { type: "folder", id: folderId, name, children: [] });
+          parentId = folderId;
+        }
+        const count = parentId ? (findFolder(root, parentId)?.children.length ?? 0) : root.length;
+        if (canMove(root, id, { parentId, index: count })) root = moveNode(root, id, { parentId, index: count });
+      }
+      commit(root);
     },
 
     move: (id, target) => {

@@ -45,10 +45,21 @@ function DialogOverlay({
   )
 }
 
+/**
+ * Whether an event comes from something that stays usable over any dialog
+ * (marked `data-above-dialogs`, e.g. an MCP request waiting for an answer):
+ * using it mustn't close the dialog underneath.
+ */
+function fromAboveDialogs(event: Event) {
+  return event.target instanceof Element && event.target.closest("[data-above-dialogs]") !== null
+}
+
 function DialogContent({
   className,
   children,
   showCloseButton = true,
+  onPointerDownOutside,
+  onInteractOutside,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
@@ -62,6 +73,14 @@ function DialogContent({
           "fixed top-[50%] left-[50%] z-50 flex max-h-[calc(100%-3rem)] w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] flex-col overflow-hidden rounded-xl border border-line bg-editor text-fg shadow-overlay duration-150 outline-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 max-w-lg",
           className
         )}
+        onPointerDownOutside={(e) => {
+          if (fromAboveDialogs(e)) e.preventDefault()
+          else onPointerDownOutside?.(e)
+        }}
+        onInteractOutside={(e) => {
+          if (fromAboveDialogs(e)) e.preventDefault()
+          else onInteractOutside?.(e)
+        }}
         {...props}
       >
         {children}

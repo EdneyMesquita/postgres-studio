@@ -3,6 +3,7 @@ import { TableTabView } from "../table/TableTabView";
 import { DiagramTabView } from "../diagram/DiagramTabView";
 import { ActivityTabView } from "../activity/ActivityTabView";
 import { ScriptConsole } from "../console/ScriptConsole";
+import { DormantTab } from "./DormantTab";
 import { CollectionTabs } from "../tabs/CollectionTabs";
 import { TabDragGhost } from "../tabs/TabDragGhost";
 import { useTabDragStore } from "../tabs/useTabDrag";
@@ -61,7 +62,8 @@ export function EditorArea() {
 
   return (
     <>
-      {connected > 0 && <CollectionTabs />}
+      {/* Tabs reopened from the last session show before anything connects. */}
+      {(connected > 0 || tabs.length > 0) && <CollectionTabs />}
       <div
         className={cn("relative grid min-h-0 flex-1", split ? "gap-px bg-line" : "bg-editor")}
         style={{
@@ -105,7 +107,9 @@ export function EditorArea() {
               onFocusCapture={split && visible ? () => focusPane(pane) : undefined}
             >
               <PaneContext.Provider value={{ inPane: split, compact }}>
-                {tab.kind === "table" ? (
+                {tab.dormant ? (
+                  visible && <DormantTab tab={tab} />
+                ) : tab.kind === "table" ? (
                   <TableTabView tab={tab} active={isFocused} shown={visible} />
                 ) : tab.kind === "diagram" ? (
                   <DiagramTabView tab={tab} />

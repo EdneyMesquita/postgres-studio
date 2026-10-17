@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { OpenConnectionsItems } from "./OpenConnectionsMenu";
 import { useActiveConnection, useConnectedCount } from "./useActiveConnection";
 import { AssistantStatusItem } from "../assistant/AssistantStatusItem";
+import { McpStatusItem } from "../mcp/McpStatusItem";
 
 interface StatusItemProps {
   className?: string;
@@ -123,6 +124,7 @@ export function StatusBar() {
         <StatusItem className="font-data">{tab.database}</StatusItem>
       )}
       {tab && <StatusItem>SQL</StatusItem>}
+      <McpStatusItem />
       <AssistantStatusItem />
     </footer>
   );

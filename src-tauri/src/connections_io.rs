@@ -4,7 +4,11 @@
 //! Connections", "version": 1, "connections": [...]}`), which keeps every
 //! option of a profile. Import reads that, and pgAdmin 4's `servers.json`
 //! (File > Export servers in pgAdmin), whose passwords pgAdmin never
-//! exports, so those come in without one.
+//! exports, so those come in without one. Both carry the folder each
+//! connection was in (the sidebar's, or pgAdmin's server group), which the
+//! import recreates.
+
+use std::collections::HashMap;
 
 use std::path::Path;
 
@@ -43,6 +47,9 @@ struct FileEntry {
     ssh_key_passphrase: Option<String>,
     #[serde(default)]
     advanced: ConnectionAdvancedOptions,
+    /// The sidebar folder it was in, as "Parent / Child".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    folder: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -53,11 +60,13 @@ struct ExportFile {
     connections: Vec<serde_json::Value>,
 }
 
-/// Writes `profiles` to `dest_path`. With `include_secrets`, passwords and
-/// passphrases are read from the secret store and written in plain text:
-/// only the file gets them, never the frontend, and the UI says so.
+/// Writes `profiles` to `dest_path`, each with its folder from `folders`
+/// (connection id to "Parent / Child"). With `include_secrets`, passwords
+/// and passphrases are read from the secret store and written in plain
+/// text: only the file gets them, never the frontend, and the UI says so.
 pub fn export_connections(
     profiles: &[ConnectionProfile],
+    folders: &HashMap<String, String>,
     include_secrets: bool,
     secrets: &dyn SecretStore,
     dest_path: &Path,
@@ -87,6 +96,7 @@ pub fn export_connections(
             ssh_password: secret(&p.id, SecretKind::SshPassword)?,
             ssh_key_passphrase: secret(&p.id, SecretKind::SshKeyPassphrase)?,
             advanced: p.advanced.clone(),
+            folder: folders.get(&p.id).cloned(),
         };
         connections
             .push(serde_json::to_value(entry).map_err(|e| AppError::InvalidInput(e.to_string()))?);
@@ -108,7 +118,20 @@ pub struct ParsedImportEntry {
     pub input: ConnectionProfileInput,
     /// Imports, but needs attention afterwards.
     pub warning: Option<String>,
+    /// The folder it was in, as "Parent / Child".
+    pub folder: Option<String>,
 }
+
+/// Which app wrote an import file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ImportFormat {
+    PostgresStudio,
+    PgAdmin,
+}
+
+/// pgAdmin puts every server in this group unless the user made others.
+const PGADMIN_DEFAULT_GROUP: &str = "Servers";
 
 impl ParsedImportEntry {
     /// Where it connects, for the preview.
@@ -123,27 +146,39 @@ impl ParsedImportEntry {
 /// One `Ok` per importable connection; one that can't be imported becomes
 /// an `Err` saying why, so the rest of the file still imports.
 pub fn parse_connections_file(raw: &str) -> AppResult<Vec<Result<ParsedImportEntry, String>>> {
+    Ok(parse_connections_file_with_format(raw)?.1)
+}
+
+/// `parse_connections_file`, and which app wrote the file.
+pub type ParsedFile = (ImportFormat, Vec<Result<ParsedImportEntry, String>>);
+
+pub fn parse_connections_file_with_format(raw: &str) -> AppResult<ParsedFile> {
     let value: serde_json::Value = serde_json::from_str(raw)
         .map_err(|e| AppError::InvalidInput(format!("not a recognized connections file: {e}")))?;
     if value.get("type").and_then(|t| t.as_str()) == Some(FILE_TYPE) {
         let file: ExportFile = serde_json::from_value(value).map_err(|e| {
             AppError::InvalidInput(format!("not a recognized connections file: {e}"))
         })?;
-        return Ok(file
-            .connections
-            .into_iter()
-            .enumerate()
-            .map(|(i, entry)| parse_own(i, entry))
-            .collect());
+        return Ok((
+            ImportFormat::PostgresStudio,
+            file.connections
+                .into_iter()
+                .enumerate()
+                .map(|(i, entry)| parse_own(i, entry))
+                .collect(),
+        ));
     }
     if let Some(servers) = value.get("Servers").and_then(|s| s.as_object()) {
         let mut entries: Vec<(&String, &serde_json::Value)> = servers.iter().collect();
         entries.sort_by_key(|(k, _)| k.parse::<u64>().unwrap_or(u64::MAX));
-        return Ok(entries
-            .into_iter()
-            .enumerate()
-            .map(|(i, (_, server))| parse_pgadmin(i, server))
-            .collect());
+        return Ok((
+            ImportFormat::PgAdmin,
+            entries
+                .into_iter()
+                .enumerate()
+                .map(|(i, (_, server))| parse_pgadmin(i, server))
+                .collect(),
+        ));
     }
     Err(AppError::InvalidInput(
         "Unrecognized file (expected a Postgres Studio connections export or pgAdmin's servers.json)"
@@ -175,6 +210,7 @@ fn parse_own(index: usize, raw: serde_json::Value) -> Result<ParsedImportEntry, 
             advanced: entry.advanced,
         },
         warning: None,
+        folder: entry.folder.filter(|f| !f.trim().is_empty()),
     })
 }
 
@@ -182,6 +218,8 @@ fn parse_own(index: usize, raw: serde_json::Value) -> Result<ParsedImportEntry, 
 #[serde(rename_all = "PascalCase")]
 struct PgAdminServer {
     name: Option<String>,
+    #[serde(default)]
+    group: Option<String>,
     host: Option<String>,
     #[serde(default)]
     host_addr: Option<String>,
@@ -286,6 +324,11 @@ fn parse_pgadmin(index: usize, raw: &serde_json::Value) -> Result<ParsedImportEn
         warning: s.username.as_ref().map(|_| {
             "pgAdmin doesn't export passwords; add it by editing the connection".to_string()
         }),
+        // The default group says nothing about where it belongs.
+        folder: s
+            .group
+            .clone()
+            .filter(|g| !g.trim().is_empty() && g != PGADMIN_DEFAULT_GROUP),
     })
 }
 
@@ -330,7 +373,9 @@ mod tests {
 
         for (include, expected) in [(false, None), (true, Some("s3cret"))] {
             let path = dir.join(format!("out-{include}.json"));
-            export_connections(&[profile("a", "prod")], include, &secrets, &path).unwrap();
+            let folders = HashMap::from([("a".to_string(), "Remote / EU".to_string())]);
+            export_connections(&[profile("a", "prod")], &folders, include, &secrets, &path)
+                .unwrap();
             let raw = std::fs::read_to_string(&path).unwrap();
             assert_eq!(raw.contains("s3cret"), include);
             let parsed = parse_connections_file(&raw).unwrap();
@@ -340,6 +385,7 @@ mod tests {
             assert_eq!(entry.input.tls.ssl_mode, SslMode::VerifyFull);
             assert!(entry.input.advanced.read_only);
             assert_eq!(entry.address(), "db.internal:5433");
+            assert_eq!(entry.folder.as_deref(), Some("Remote / EU"));
         }
         std::fs::remove_dir_all(dir).ok();
     }
@@ -347,7 +393,7 @@ mod tests {
     #[test]
     fn reads_pgadmin_servers() {
         let raw = r#"{"Servers": {
-            "2": {"Name": "Second", "Group": "Servers", "Host": "db2", "Port": 5432, "MaintenanceDB": "postgres", "Username": "bob", "SSLMode": "require"},
+            "2": {"Name": "Second", "Group": "Billing", "Host": "db2", "Port": 5432, "MaintenanceDB": "postgres", "Username": "bob", "SSLMode": "require"},
             "1": {"Name": "First", "Group": "Servers", "Host": "db1", "Port": 6543, "MaintenanceDB": "shop", "Username": "alice",
                   "ConnectionParameters": {"sslmode": "verify-full", "sslrootcert": "/ca.pem"},
                   "UseSSHTunnel": 1, "TunnelHost": "jump", "TunnelPort": "2222", "TunnelUsername": "me"},
@@ -362,6 +408,12 @@ mod tests {
         let ssh = first.input.ssh_tunnel.as_ref().unwrap();
         assert_eq!((ssh.host.as_str(), ssh.port), ("jump", 2222));
         assert!(first.warning.is_some());
+        // pgAdmin's default group is no folder; another group is one.
+        assert_eq!(first.folder, None);
+        assert_eq!(
+            parsed[1].as_ref().unwrap().folder.as_deref(),
+            Some("Billing")
+        );
         assert_eq!(
             parsed[1].as_ref().unwrap().input.tls.ssl_mode,
             SslMode::Require

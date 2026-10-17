@@ -146,6 +146,8 @@ interface AssistantState extends Settings {
   setPanelWidth: (width: number) => void;
   /** Ends setup: the Assistant is on from here. */
   enable: () => void;
+  /** Turns it off (Settings): stops what runs and closes the panel. */
+  disable: () => void;
   newSession: () => void;
   selectSession: (id: string) => void;
   clearSession: () => void;
@@ -425,6 +427,11 @@ export const useAssistantStore = create<AssistantState>()(
         setEffort: (agent, effort) =>
           set((st) => ({ modelChoice: { ...st.modelChoice, [agent]: { ...st.modelChoice[agent], effort } } })),
         setPanelWidth: (width) => set({ panelWidth: width }),
+
+        disable: () => {
+          if (current()?.running) void get().stop();
+          set({ enabled: false, panel: null });
+        },
 
         enable: () => {
           set({ enabled: true, panel: "chat" });
