@@ -55,7 +55,7 @@ export function EditorTab({ tab, active, entries, bare = false, pane = null, pan
         role="tab"
         aria-selected={active}
         tabIndex={0}
-        title={`${tabName(tab)}${fileName ? ` · ${fileName}` : ""}\n${tab.connection.name} · ${tab.connection.summary}${pane !== null ? `\nIn pane ${pane + 1}` : ""}`}
+        title={`${tabName(tab)}${fileName ? ` · ${fileName}` : ""}\n${tab.connection.name} · ${tab.connection.summary}${pane !== null ? `\nIn pane ${pane + 1}` : ""}${tab.dormant ? "\nReopened from your last session: connects when opened" : ""}`}
         className={cn(
           "group relative flex max-w-[280px] shrink-0 select-none items-center gap-[7px] whitespace-nowrap pl-3 pr-1.5 text-base",
           active ? "text-fg" : "text-fg-2 hover:bg-row-hover hover:text-fg",
@@ -78,7 +78,10 @@ export function EditorTab({ tab, active, entries, bare = false, pane = null, pan
           if (e.button === 1) closeTab(tab.id);
         }}
       >
-        <ConnectionChip name={tab.connection.name} color={color} size="dot" />
+        {/* A reopened tab that hasn't connected yet is drawn faint. */}
+        <span className={cn("contents", tab.dormant && "[&>*]:opacity-60")}>
+          <ConnectionChip name={tab.connection.name} color={color} size="dot" />
+        </span>
         <Icon
           className={cn(
             "size-3.5 shrink-0 text-fg-2",
@@ -86,10 +89,10 @@ export function EditorTab({ tab, active, entries, bare = false, pane = null, pan
           )}
           aria-hidden
         />
-        <span className="min-w-0 truncate">{name}</span>
+        <span className={cn("min-w-0 truncate", tab.dormant && "opacity-60")}>{name}</span>
         {/* Names the connection too, so tabs stay unambiguous when two
             servers hold the same namespace - unless its group already does. */}
-        {!bare && <span className="shrink-0 text-sm text-fg-3">{tab.connection.name}</span>}
+        {!bare && <span className={cn("shrink-0 text-sm text-fg-3", tab.dormant && "opacity-60")}>{tab.connection.name}</span>}
         {pane !== null && <PaneNumber pane={pane} focused={paneFocused} />}
         {dirty && (
           <span

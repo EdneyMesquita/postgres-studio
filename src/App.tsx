@@ -13,6 +13,7 @@ import { useGlobalShortcuts } from "./components/layout/useGlobalShortcuts";
 import { LazyQuickOpenPalette } from "./components/palette/LazyQuickOpenPalette";
 import { McpRequestCard } from "./components/mcp/McpRequestCard";
 import { startMcp } from "./store/mcpStore";
+import { startSessionRestore } from "./store/sessionRestore";
 import { useSuppressNativeContextMenu } from "./lib/useSuppressNativeContextMenu";
 
 function App() {
@@ -20,6 +21,7 @@ function App() {
   useGlobalShortcuts();
   // After mount: event listeners can't register at import time.
   useEffect(startMcp, []);
+  useEffect(startSessionRestore, []);
 
   return (
     <TooltipProvider delayDuration={400}>

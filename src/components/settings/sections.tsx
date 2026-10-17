@@ -17,6 +17,8 @@ import { Lead, SettingRow } from "./parts";
 export function GeneralSettings() {
   const preference = useThemeStore((s) => s.preference);
   const setPreference = useThemeStore((s) => s.setPreference);
+  const reopenTabs = useSettingsStore((s) => s.reopenTabs);
+  const setReopenTabs = useSettingsStore((s) => s.setReopenTabs);
   return (
     <>
       <Field label="Theme">
@@ -32,6 +34,12 @@ export function GeneralSettings() {
           ]}
         />
       </Field>
+      <SwitchField
+        label="Reopen last session's tabs on launch"
+        description="Tables, consoles and their SQL come back as they were. A connection reconnects when you open one of its tabs, not before."
+        checked={reopenTabs}
+        onCheckedChange={setReopenTabs}
+      />
     </>
   );
 }

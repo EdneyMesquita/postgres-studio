@@ -54,6 +54,9 @@ export const DEFAULT_MCP_CAPS: McpSettings["caps"] = {
 };
 
 interface SettingsState {
+  /** Put the last session's tabs back on launch, dormant until opened. */
+  reopenTabs: boolean;
+  setReopenTabs: (on: boolean) => void;
   /** The limit a new table tab starts with. */
   pageSize: number;
   setPageSize: (size: number) => void;
@@ -82,6 +85,8 @@ interface SettingsState {
 export const useSettingsStore = create<SettingsState>()(
   persist(
     (set) => ({
+      reopenTabs: true,
+      setReopenTabs: (reopenTabs) => set({ reopenTabs }),
       pageSize: 100,
       setPageSize: (pageSize) => set({ pageSize }),
       consoleRowLimit: 1000,
@@ -135,6 +140,7 @@ export const useSettingsStore = create<SettingsState>()(
       name: "postgres-studio-settings",
       version: 1,
       partialize: (s) => ({
+        reopenTabs: s.reopenTabs,
         pageSize: s.pageSize,
         consoleRowLimit: s.consoleRowLimit,
         consoleEngine: s.consoleEngine,
