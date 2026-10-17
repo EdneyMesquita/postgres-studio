@@ -1,5 +1,6 @@
 import {
   Activity,
+  ArrowLeftRight,
   Database,
   DatabaseBackup,
   DatabaseZap,
@@ -8,6 +9,7 @@ import {
   Moon,
   PanelRight,
   Plus,
+  Settings,
   SlidersHorizontal,
   Sparkles,
   SquareTerminal,
@@ -152,6 +154,19 @@ export function PaletteActions({ search, run }: PaletteActionsProps) {
       icon: other === "light" ? <Sun /> : <Moon />,
       label: `Switch to ${other} theme`,
       perform: () => useThemeStore.getState().setTheme(other),
+    },
+    {
+      id: "settings",
+      icon: <Settings />,
+      label: "Settings",
+      shortcut: "Ctrl ,",
+      perform: () => useUiStore.getState().setSettingsSection("general"),
+    },
+    {
+      id: "transfer",
+      icon: <ArrowLeftRight />,
+      label: "Import / export connections",
+      perform: () => useUiStore.getState().openTransfer("export"),
     },
     {
       id: "toggle-explorer",

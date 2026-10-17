@@ -6,11 +6,11 @@ import App from "./App";
 import { AppErrorBoundary } from "./components/layout/AppErrorBoundary";
 import "./index.css";
 import { installErrorLogging } from "./lib/log";
-import { applyTheme, getStoredTheme } from "./lib/themes";
+import { applyTheme, getStoredPreference, getStoredTheme } from "./lib/themes";
 import { rememberWindowSize } from "./lib/windowSize";
 
 installErrorLogging();
-applyTheme(getStoredTheme());
+applyTheme(getStoredTheme(), getStoredPreference());
 rememberWindowSize();
 
 /** Marks the first commit, so startup can be measured (scripts/bench.mjs, the README). */

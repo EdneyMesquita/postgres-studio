@@ -8,6 +8,7 @@ import { useExplorerStore } from "./explorerStore";
 import { clearColumnCache } from "../lib/sqlCompletion";
 import { useGraphStore } from "./graphStore";
 import type { ExplainResult, SqlRun, TxState } from "../types/pg";
+import { useSettingsStore } from "./settingsStore";
 
 /** Quotes an identifier only when it needs it. */
 export function quoteIdent(name: string): string {
@@ -143,7 +144,7 @@ export const useConsoleStore = create<ConsoleState>((set, get) => {
         if (before.txMode === "manual" && before.tx === "idle") {
           await api.runSql(sessionId, database, key, "BEGIN", null, 1, null);
         }
-        const run = await api.runSql(sessionId, database, key, sql, caret, 1000, executionId);
+        const run = await api.runSql(sessionId, database, key, sql, caret, useSettingsStore.getState().consoleRowLimit, executionId);
         if (!stillCurrent()) return;
         const failed = run.results.findIndex((r) => r.error);
         const firstWithRows = run.results.findIndex((r) => r.returnsRows);

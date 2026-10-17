@@ -3,6 +3,7 @@ import { api } from "../lib/tauri";
 import { sessionIdFor } from "./connectionsStore";
 import { ident as quoteIdent } from "../lib/editSql";
 import type { BrowseResult, CellValue, RelKind, Row, RowEdit, TableInfo } from "../types/pg";
+import { useSettingsStore } from "./settingsStore";
 
 /** The connection a tab was opened on, as shown on the tab. */
 export interface TabConnection {
@@ -183,7 +184,7 @@ function newTableTab(
     page: null,
     whereText: where,
     orderByText: "",
-    limit: 100,
+    limit: useSettingsStore.getState().pageSize,
     offset: 0,
     loading: false,
     error: null,
