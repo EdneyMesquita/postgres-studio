@@ -75,6 +75,7 @@ export function ConnectionRow({
       onConnect: () => connect(profile.id),
       onDisconnect: () => disconnect(profile.id),
       onEdit: () => useUiStore.getState().setConnectionDialog({ mode: "edit", id: profile.id }),
+      onExport: () => useUiStore.getState().openTransfer("export", [profile.id]),
       onDelete: handleDelete,
       onRoles: session
         ? () =>

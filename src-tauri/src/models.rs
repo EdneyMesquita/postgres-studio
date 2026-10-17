@@ -146,6 +146,8 @@ pub struct ConnectionProfileMeta {
     pub summary: String,
     pub database: Option<String>,
     pub read_only: bool,
+    /// Whether a password is saved for it, for the export picker.
+    pub has_password: bool,
 }
 
 impl From<&ConnectionProfile> for ConnectionProfileMeta {
@@ -164,6 +166,7 @@ impl From<&ConnectionProfile> for ConnectionProfileMeta {
             summary,
             database: profile.database.clone(),
             read_only: profile.advanced.read_only,
+            has_password: profile.has_password,
         }
     }
 }
@@ -265,6 +268,10 @@ pub struct ConnectionImportPreview {
     pub error: Option<String>,
     /// A saved connection already has this name.
     pub exists: bool,
+    /// The folder it was in, as "Parent / Child".
+    pub folder: Option<String>,
+    /// Which app wrote the file.
+    pub format: crate::connections_io::ImportFormat,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -276,6 +283,16 @@ pub struct ConnectionsImportSummary {
     pub errors: Vec<String>,
     /// Notes about connections that were imported but need attention.
     pub warnings: Vec<String>,
+    /// What was saved, in file order, for placing it in the sidebar.
+    pub created: Vec<ImportedConnection>,
+}
+
+/// A connection an import saved, and the folder it came from.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedConnection {
+    pub id: ConnectionId,
+    pub folder: Option<String>,
 }
 
 /// The file an export writes.

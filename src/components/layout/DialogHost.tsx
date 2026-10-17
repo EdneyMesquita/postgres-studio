@@ -29,8 +29,8 @@ const EditConnectionDialog = lazy(() =>
 export function DialogHost() {
   const dialog = useUiStore((s) => s.connectionDialog);
   const setConnectionDialog = useUiStore((s) => s.setConnectionDialog);
-  const importExportOpen = useUiStore((s) => s.importExportOpen);
-  const setImportExportOpen = useUiStore((s) => s.setImportExportOpen);
+  const transfer = useUiStore((s) => s.transfer);
+  const closeTransfer = useUiStore((s) => s.closeTransfer);
   const dump = useDumpStore((s) => s.dialog);
   const closeDump = useDumpStore((s) => s.close);
   const close = () => setConnectionDialog(null);
@@ -39,8 +39,8 @@ export function DialogHost() {
   if (dialog?.mode === "new") content = <ConnectionForm onSaved={close} onCancel={close} />;
   else if (dialog?.mode === "edit") {
     content = <EditConnectionDialog key={dialog.id} id={dialog.id} onClose={close} />;
-  } else if (importExportOpen) {
-    content = <ConnectionsImportExportDialog onClose={() => setImportExportOpen(false)} />;
+  } else if (transfer) {
+    content = <ConnectionsImportExportDialog initial={transfer} onClose={closeTransfer} />;
   } else if (dump) {
     const Dialog = dump.kind === "backup" ? BackupDialog : RestoreDialog;
     content = <Dialog key={`${dump.kind}/${dump.connection.id}/${dump.database}`} dialog={dump} onClose={closeDump} />;

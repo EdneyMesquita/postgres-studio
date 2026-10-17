@@ -3,6 +3,7 @@ import type { PointerEvent } from "react";
 import { Folder, FolderOpen } from "lucide-react";
 import { useConnectionsStore } from "../../store/connectionsStore";
 import { useSidebarLayoutStore } from "../../store/sidebarLayoutStore";
+import { useUiStore } from "../../store/uiStore";
 import { connectionIds, containsConnections } from "../../lib/sidebarTree";
 import type { FolderNode } from "../../lib/sidebarTree";
 import { RowContextMenu } from "@/components/common/ActionMenu";
@@ -49,6 +50,7 @@ export function FolderRow({ folder, depth, expanded, dragClass, onPress }: Folde
       onNewFolder: () => createFolder(folder.id),
       onRename: () => startRename(folder.id),
       onDisconnectAll: () => void disconnectAll(connected),
+      onExport: () => useUiStore.getState().openTransfer("export", connectionIds(folder.children)),
       onDelete: () => deleteFolder(folder.id),
     });
   };

@@ -18,7 +18,7 @@ use crate::models::{
     validate_color, ConnectionHandle, ConnectionImportPreview, ConnectionProfile,
     ConnectionProfileInput, ConnectionProfileMeta, ConnectionSource, ConnectionTestResult,
     ConnectionsExportSummary, ConnectionsImportSummary, ExportFormat, ExportSummary,
-    SecretBackendInfo, SecretBackendKind, SslMode,
+    ImportedConnection, SecretBackendInfo, SecretBackendKind, SslMode,
 };
 use crate::pg::catalog::{self, DatabaseInfo, SchemaInfo, SchemaObjects, TableInfo};
 use crate::pg::connect::{strip_tls_params, uri_param, Canceller};
@@ -234,14 +234,24 @@ pub async fn delete_connection_profile(state: State<'_, AppState>, id: String) -
 #[tauri::command]
 pub async fn export_connections(
     state: State<'_, AppState>,
+    layout: State<'_, SidebarLayoutStore>,
     dest_path: String,
     include_secrets: bool,
+    ids: Option<Vec<String>>,
 ) -> AppResult<ConnectionsExportSummary> {
-    let profiles = state.connection_store.list();
+    let mut profiles = state.connection_store.list();
+    // Only the chosen ones, in the order given, when the user picked;
+    // every saved one otherwise.
+    if let Some(ids) = &ids {
+        profiles.retain(|p| ids.contains(&p.id));
+        profiles.sort_by_key(|p| ids.iter().position(|id| id == &p.id));
+    }
+    let folders = crate::sidebar_layout::folder_paths(&layout.get().unwrap_or_default());
     let exported = logged(
         "export_connections",
         connections_io::export_connections(
             &profiles,
+            &folders,
             include_secrets,
             state.secret_store.as_ref(),
             std::path::Path::new(&dest_path),
@@ -276,7 +286,8 @@ fn preview_import(state: &AppState, raw: &str) -> AppResult<Vec<ConnectionImport
         .into_iter()
         .map(|p| p.name)
         .collect();
-    Ok(connections_io::parse_connections_file(raw)?
+    let (format, entries) = connections_io::parse_connections_file_with_format(raw)?;
+    Ok(entries
         .into_iter()
         .enumerate()
         .map(|(index, entry)| match entry {
@@ -287,6 +298,8 @@ fn preview_import(state: &AppState, raw: &str) -> AppResult<Vec<ConnectionImport
                 name: entry.input.name,
                 warning: entry.warning,
                 error: None,
+                folder: entry.folder,
+                format,
             },
             Err(message) => ConnectionImportPreview {
                 index,
@@ -295,6 +308,8 @@ fn preview_import(state: &AppState, raw: &str) -> AppResult<Vec<ConnectionImport
                 warning: None,
                 error: Some(message),
                 exists: false,
+                folder: None,
+                format,
             },
         })
         .collect())
@@ -344,6 +359,7 @@ async fn import_file(
     let mut imported = 0;
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
+    let mut created = Vec::new();
     for (index, entry) in parsed.into_iter().enumerate() {
         if selected.is_some_and(|picked| !picked.contains(&index)) {
             continue;
@@ -358,6 +374,7 @@ async fn import_file(
         if let Some(warning) = entry.warning {
             warnings.push(format!("{}: {warning}", entry.input.name));
         }
+        let folder = entry.folder;
         let profile = materialize_profile(state, entry.input).await?;
         let saved = state.connection_store.upsert(profile)?;
         // Whether a password came along is what "imported connections
@@ -370,12 +387,17 @@ async fn import_file(
             yes_no(saved.has_password)
         );
         imported += 1;
+        created.push(ImportedConnection {
+            id: saved.id,
+            folder,
+        });
     }
 
     Ok(ConnectionsImportSummary {
         imported,
         errors,
         warnings,
+        created,
     })
 }
 

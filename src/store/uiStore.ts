@@ -9,6 +9,9 @@ export type SidePanel = "explorer" | "scripts" | null;
 /** The connection dialog: a new connection, or editing a saved one. */
 export type ConnectionDialog = { mode: "new" } | { mode: "edit"; id: string } | null;
 
+/** The import / export dialog: which side, and the connections an export starts with. */
+export type TransferDialog = { tab: "export" | "import"; ids: string[] | null };
+
 /** The console's editor and output: side by side, or editor above output. */
 export type ConsoleLayout = "side" | "stacked";
 
@@ -34,8 +37,10 @@ interface UiState {
   connectionDialog: ConnectionDialog;
   setConnectionDialog: (dialog: ConnectionDialog) => void;
   /** The import / export connections dialog. */
-  importExportOpen: boolean;
-  setImportExportOpen: (open: boolean) => void;
+  transfer: TransferDialog | null;
+  /** Opens it on `tab`; an export starts with `ids` ticked (all when null). */
+  openTransfer: (tab: TransferDialog["tab"], ids?: string[] | null) => void;
+  closeTransfer: () => void;
   /** The Ctrl+K quick-open palette. */
   paletteOpen: boolean;
   setPaletteOpen: (open: boolean) => void;
@@ -74,8 +79,9 @@ export const useUiStore = create<UiState>()(
       setInspectorWidth: (width) => set({ inspectorWidth: width }),
       connectionDialog: null,
       setConnectionDialog: (dialog) => set({ connectionDialog: dialog }),
-      importExportOpen: false,
-      setImportExportOpen: (open) => set({ importExportOpen: open }),
+      transfer: null,
+      openTransfer: (tab, ids = null) => set({ transfer: { tab, ids } }),
+      closeTransfer: () => set({ transfer: null }),
       paletteOpen: false,
       setPaletteOpen: (open) => set({ paletteOpen: open }),
     }),

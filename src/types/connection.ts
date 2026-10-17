@@ -77,6 +77,8 @@ export interface ConnectionProfileMeta {
   summary: string;
   database: string | null;
   readOnly: boolean;
+  /** Whether a password is saved for it. */
+  hasPassword: boolean;
 }
 
 export interface ConnectionTestResult {
@@ -116,12 +118,24 @@ export interface ConnectionImportPreview {
   error: string | null;
   /** A saved connection already has this name. */
   exists: boolean;
+  /** The folder it was in, as "Parent / Child". */
+  folder: string | null;
+  /** Which app wrote the file. */
+  format: "postgresStudio" | "pgAdmin";
+}
+
+/** A connection an import saved, and the folder it came from. */
+export interface ImportedConnection {
+  id: string;
+  folder: string | null;
 }
 
 export interface ConnectionsImportSummary {
   imported: number;
   errors: string[];
   warnings: string[];
+  /** What was saved, in file order. */
+  created: ImportedConnection[];
 }
 
 export function emptyTlsOptions(): TlsOptions {

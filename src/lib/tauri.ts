@@ -70,8 +70,9 @@ export const api = {
   /** Opens the app's log folder in the file manager; resolves to its path. */
   openLogDir: () => invoke<string>("open_log_dir"),
 
-  exportConnections: (destPath: string, includeSecrets: boolean) =>
-    invoke<ConnectionsExportSummary>("export_connections", { destPath, includeSecrets }),
+  /** Exports the connections in `ids` (in that order), or every saved one when null. */
+  exportConnections: (destPath: string, includeSecrets: boolean, ids: string[] | null = null) =>
+    invoke<ConnectionsExportSummary>("export_connections", { destPath, includeSecrets, ids }),
 
   previewConnectionsImport: (srcPath: string) =>
     invoke<ConnectionImportPreview[]>("preview_connections_import", { srcPath }),

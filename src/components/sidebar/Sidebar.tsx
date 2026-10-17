@@ -79,7 +79,7 @@ export function Sidebar() {
           size="icon"
           title="Import / export connections"
           aria-label="Import or export connections"
-          onClick={() => useUiStore.getState().setImportExportOpen(true)}
+          onClick={() => useUiStore.getState().openTransfer("export")}
         >
           <ArrowLeftRight />
         </Button>

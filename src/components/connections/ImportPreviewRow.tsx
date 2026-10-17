@@ -46,6 +46,7 @@ export function ImportPreviewRow({ entry, checked, onToggle }: ImportPreviewRowP
               {entry.address}
             </span>
           )}
+          {entry.folder && <span className="truncate text-xs text-fg-3">In the folder {entry.folder}</span>}
           {entry.warning && <span className="text-xs text-warn">{entry.warning}</span>}
           {entry.error && <span className="text-xs text-danger">Can't import: {entry.error}</span>}
         </span>
