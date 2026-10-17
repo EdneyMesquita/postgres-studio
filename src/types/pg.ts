@@ -204,6 +204,35 @@ export interface SqlRun {
   notices: Notice[];
   transaction: TxState;
   elapsedMs: number;
+  /** What psql printed, line by line, when psql ran it. */
+  log?: LogLine[];
+}
+
+/** A line psql printed (out), an error or notice (err), or the app's own note (info). */
+export interface LogLine {
+  /** Milliseconds since the run started. */
+  ms: number;
+  stream: "out" | "err" | "info";
+  text: string;
+}
+
+/** Where psql was found, or why it wasn't. */
+export interface PsqlInfo {
+  path: string | null;
+  version: string | null;
+  /** Whether `path` is the one the user picked. */
+  custom: boolean;
+  /** The picked executable didn't run as psql. */
+  error: string | null;
+  searched: string[];
+}
+
+/** How psql is started, from Settings › Console. */
+export interface PsqlOptions {
+  path: string | null;
+  extraArgs: string;
+  loadRc: boolean;
+  timeoutSecs: number | null;
 }
 
 export interface BrowseInput {

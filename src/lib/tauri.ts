@@ -136,6 +136,13 @@ export const api = {
     executionId: string | null,
   ) => invoke<SqlRun>("run_sql", { sessionId, database, tabId, sql, caret, rowLimit, executionId }),
 
+  /** Runs `sql` with psql on its own connection; its lines arrive as `psql-log` events. */
+  runPsql: (sessionId: string, database: string, sql: string, rowLimit: number, executionId: string, options: PsqlOptions) =>
+    invoke<SqlRun>("run_psql", { sessionId, database, sql, rowLimit, executionId, options }),
+
+  /** Finds psql: the picked executable, else the newest one on this computer. */
+  psqlDetect: (customPath: string | null) => invoke<PsqlInfo>("psql_detect", { customPath }),
+
   /** Closes the tab's own connections; an open transaction rolls back. */
   releaseTab: (sessionId: string, tabId: string) => invoke<void>("release_tab", { sessionId, tabId }),
 
@@ -271,7 +278,7 @@ export const api = {
   ) => invoke<CsvImportSummary>("import_csv", { sessionId, database, schema, table, path, mapping, options, executionId }),
 };
 
-import type { GraphCatalog } from "../types/pg";
+import type { GraphCatalog, PsqlInfo, PsqlOptions } from "../types/pg";
 
 /** Graph and vector features (Apache AGE, pgvector, SQL/PGQ). */
 export const graphApi = {

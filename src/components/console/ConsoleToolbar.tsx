@@ -19,6 +19,8 @@ import { confirm } from "../../store/confirmStore";
 import { ConsoleLayoutToggle } from "./ConsoleLayoutToggle";
 import { ConsoleTargetPill } from "./ConsoleTargetPill";
 import { ScriptFileChip } from "./ScriptFileChip";
+import { ConsoleEnginePicker } from "./ConsoleEnginePicker";
+import { useTabEngine } from "../../store/settingsStore";
 import { FromAssistantTag } from "../assistant/FromAssistantTag";
 import { useAssistantStore } from "../../store/assistantStore";
 
@@ -53,6 +55,7 @@ export function ConsoleToolbar({ tab, dirty, running, onRun, onRunAll, onExplain
   const endTransaction = useConsoleStore((s) => s.endTransaction);
   const session = useConnectionsStore((s) => s.sessions[tab.connection.id]);
   const inTransaction = tx === "active" || tx === "failed";
+  const psql = useTabEngine(key) === "psql";
 
   async function changeMode(mode: TxMode) {
     if (!session) return;
@@ -81,9 +84,18 @@ export function ConsoleToolbar({ tab, dirty, running, onRun, onRunAll, onExplain
         </span>
       )}
       <span className="flex-1" />
+      <ConsoleEnginePicker tabId={key} />
       {session && !session.poolerMode && (
-        <span className="contents @max-[900px]:hidden">
-          <SegmentedControl aria-label="Transaction mode" value={txMode} onChange={(m) => void changeMode(m)} options={modes} />
+        <span
+          className={cn(psql ? "inline-flex" : "contents", "@max-[900px]:hidden")}
+          title={psql ? "psql runs each script in a session of its own: put BEGIN … COMMIT in the script" : undefined}
+        >
+          <SegmentedControl
+            aria-label="Transaction mode"
+            value={psql ? "auto" : txMode}
+            onChange={(m) => void changeMode(m)}
+            options={psql ? modes.map((m) => ({ ...m, title: undefined, disabled: true })) : modes}
+          />
         </span>
       )}
       {inTransaction && session && (
@@ -137,18 +149,26 @@ export function ConsoleToolbar({ tab, dirty, running, onRun, onRunAll, onExplain
         </Button>
       ) : (
         <>
-          <Button variant="ghost" title="Run every statement (Ctrl Shift ⏎)" aria-label="Run all" onClick={onRunAll}>
-            <ListVideo />
-            <span className="@max-[700px]:hidden">Run all</span>
-          </Button>
+          {!psql && (
+            <Button variant="ghost" title="Run every statement (Ctrl Shift ⏎)" aria-label="Run all" onClick={onRunAll}>
+              <ListVideo />
+              <span className="@max-[700px]:hidden">Run all</span>
+            </Button>
+          )}
           <Button
             variant={pending ? "secondary" : "primary"}
             disabled={pending}
-            title={pending ? "Accept or reject the proposal first" : "Run the statement at the caret, or the selection (Ctrl ⏎)"}
+            title={
+              pending
+                ? "Accept or reject the proposal first"
+                : psql
+                  ? "psql runs the whole script, or the selection (Ctrl ⏎)"
+                  : "Run the statement at the caret, or the selection (Ctrl ⏎)"
+            }
             onClick={onRun}
           >
             <Play />
-            Run
+            {psql ? "Run script" : "Run"}
             <Kbd>Ctrl ⏎</Kbd>
           </Button>
         </>

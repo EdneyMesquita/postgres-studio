@@ -1,15 +1,19 @@
 import { useId, useRef, useState, type ReactNode } from "react";
-import { CircleCheck, Palette, Plug, Search, Sparkles, Table } from "lucide-react";
+import { CircleCheck, Palette, Plug, Search, Sparkles, SquareTerminal, Table } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { SideNav } from "@/components/ui/side-nav";
 import { AGENT_NAMES, useAssistantStore } from "../../store/assistantStore";
+import { psqlFound, usePsqlStore } from "../../store/psqlStore";
+import { useSettingsStore } from "../../store/settingsStore";
 import type { SettingsSection } from "../../store/uiStore";
+import { ConsoleSettings } from "./ConsoleSettings";
 import { AssistantSettings, ConnectionsSettings, GeneralSettings, ResultsSettings } from "./sections";
 
 const SECTIONS: { id: SettingsSection; label: string; icon: ReactNode; keys: string; body: () => ReactNode }[] = [
   { id: "general", label: "General", icon: <Palette />, keys: "theme dark light system appearance reopen tabs session launch", body: () => <GeneralSettings /> },
   { id: "results", label: "Results", icon: <Table />, keys: "rows page limit console layout grid", body: () => <ResultsSettings /> },
+  { id: "console", label: "Console", icon: <SquareTerminal />, keys: "psql engine shell script psqlrc meta-commands timeout", body: () => <ConsoleSettings /> },
   { id: "connections", label: "Connections", icon: <Plug />, keys: "import export pgadmin servers.json folder", body: () => <ConnectionsSettings /> },
   { id: "assistant", label: "Assistant", icon: <Sparkles />, keys: "ai claude codex agent model", body: () => <AssistantSettings /> },
 ];
@@ -29,10 +33,13 @@ export function SettingsDialog({ section, onSectionChange, onClose }: SettingsDi
   const idPrefix = useId();
   const [query, setQuery] = useState("");
   const bodyRef = useRef<HTMLDivElement>(null);
+  const engine = useSettingsStore((s) => s.consoleEngine);
+  const psqlOk = usePsqlStore((s) => psqlFound(s.info));
   const assistantOn = useAssistantStore((s) => s.enabled);
   const agent = useAssistantStore((s) => s.agent);
 
   const states: Partial<Record<SettingsSection, string>> = {
+    console: engine === "psql" && psqlOk ? "psql" : "Built-in",
     assistant: assistantOn ? AGENT_NAMES[agent] : "Off",
   };
   const q = query.trim().toLowerCase();

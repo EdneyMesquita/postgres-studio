@@ -64,6 +64,9 @@ pub struct SqlRun {
     pub notices: Vec<Notice>,
     pub transaction: TxState,
     pub elapsed_ms: u64,
+    /// What psql printed, line by line, when psql ran it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log: Option<Vec<crate::psql::LogLine>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -115,6 +118,7 @@ pub async fn run_sql(
         notices: client.take_notices(),
         transaction,
         elapsed_ms: started.elapsed().as_millis() as u64,
+        log: None,
     }
 }
 

@@ -160,7 +160,7 @@ fn exe_name(name: &str) -> String {
     }
 }
 
-fn hide_window(_command: &mut Command) {
+pub(crate) fn hide_window(_command: &mut Command) {
     #[cfg(windows)]
     {
         // CREATE_NO_WINDOW: no console window flashing up for each run.
@@ -168,7 +168,7 @@ fn hide_window(_command: &mut Command) {
     }
 }
 
-async fn probe(path: PathBuf) -> Option<PgTool> {
+pub(crate) async fn probe(path: PathBuf) -> Option<PgTool> {
     let mut command = Command::new(&path);
     command
         .arg("--version")
@@ -358,7 +358,7 @@ impl PgConn {
 }
 
 /// Variables that would steer a tool somewhere else than the session.
-const STRAY_ENV: [&str; 8] = [
+pub(crate) const STRAY_ENV: [&str; 8] = [
     "PGSERVICE",
     "PGSERVICEFILE",
     "PGPASSFILE",

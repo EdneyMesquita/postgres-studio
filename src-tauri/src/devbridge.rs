@@ -42,6 +42,7 @@ const EVENTS: &[&str] = &[
     crate::dump::RESTORE_EVENT,
     crate::script_file::PROGRESS_EVENT,
     crate::csv_import::PROGRESS_EVENT,
+    crate::psql::LOG_EVENT,
 ];
 
 /// Events waiting for the page's next `GET /events`.

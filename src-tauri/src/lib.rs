@@ -12,6 +12,7 @@ mod models;
 mod object_commands;
 mod paths;
 mod pg;
+mod psql;
 mod saved_scripts;
 mod script_file;
 mod secrets;
@@ -53,6 +54,8 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
         commands::browse_table,
         commands::count_rows,
         commands::run_sql,
+        commands::run_psql,
+        commands::psql_detect,
         commands::release_tab,
         commands::tab_transaction,
         commands::apply_edits,

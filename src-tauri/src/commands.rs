@@ -860,6 +860,54 @@ pub async fn run_sql(
     .await
 }
 
+/// Runs a console's SQL through psql instead of the built-in engine: the
+/// same results, plus psql's output streamed as `psql-log` events. The
+/// script and what it prints stay out of the log, as with `run_sql`.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn run_psql<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    state: State<'_, AppState>,
+    session_id: String,
+    database: String,
+    sql: String,
+    row_limit: Option<usize>,
+    execution_id: String,
+    options: crate::psql::PsqlOptions,
+) -> AppResult<SqlRun> {
+    let op = Op::new("sql (psql)", &database, None);
+    on_session(&state, &session_id, op, async |s| {
+        let cancel = track_task(&state, &execution_id, None);
+        let emit_id = execution_id.clone();
+        let result = crate::psql::run(
+            s,
+            &database,
+            &sql,
+            &options,
+            row_limit.unwrap_or(1000).clamp(1, 100_000),
+            &execution_id,
+            &cancel,
+            |line| {
+                let _ = tauri::Emitter::emit(
+                    &app,
+                    crate::psql::LOG_EVENT,
+                    serde_json::json!({ "executionId": emit_id, "line": line }),
+                );
+            },
+        )
+        .await;
+        forget_task(&state, &execution_id);
+        result
+    })
+    .await
+}
+
+/// Where psql is: the picked executable, else the newest one found.
+#[tauri::command]
+pub async fn psql_detect(custom_path: Option<String>) -> crate::psql::PsqlInfo {
+    crate::psql::detect(custom_path.as_deref()).await
+}
+
 /// Closes a tab's own connection; an open transaction on it rolls back.
 #[tauri::command]
 pub async fn release_tab(

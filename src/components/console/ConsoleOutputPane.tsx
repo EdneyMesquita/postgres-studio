@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { CircleAlert, CircleCheck, Download, LoaderCircle } from "lucide-react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { toast } from "sonner";
@@ -16,7 +16,8 @@ import { cn } from "@/lib/utils";
 import type { ConsoleSession } from "../../store/consoleStore";
 import { useConsoleStore } from "../../store/consoleStore";
 import type { Tab } from "../../store/sessionsStore";
-import type { ExportFormat, StatementResult } from "../../types/pg";
+import type { ExportFormat, LogLine, StatementResult } from "../../types/pg";
+import { useTabEngine } from "../../store/settingsStore";
 import { ResultGrid } from "../grid/ResultGrid";
 import { ConsoleOutputTabs } from "./ConsoleOutputTabs";
 import type { OutputTabOption } from "./ConsoleOutputTabs";
@@ -53,6 +54,7 @@ async function exportResult(result: StatementResult, format: ExportFormat, baseN
 /** The console's output: a tab per result set, Messages, and the plan when explained. */
 export function ConsoleOutputPane({ tab, session }: { tab: Tab; session: ConsoleSession | undefined }) {
   const idPrefix = useId();
+  const engine = useTabEngine(tab.id);
   const setOutput = useConsoleStore((s) => s.setOutput);
   const [selected, setSelected] = useState<number | null>(null);
   const run = session?.run ?? null;
@@ -64,13 +66,14 @@ export function ConsoleOutputPane({ tab, session }: { tab: Tab; session: Console
     .filter((r) => r.returnsRows || r.error)
     .map((r) => ({
       id: `r${r.index}`,
-      label: r.error ? `Error` : `Result ${r.index + 1}`,
+      // psql names what its meta-commands show, e.g. Table "public.orders".
+      label: r.error ? `Error` : run?.log && r.command !== "SELECT" ? r.command : `Result ${r.index + 1}`,
       count: r.error ? undefined : r.rowCount,
     }));
   tabs.push({
     id: "messages",
     label: "Messages",
-    count: run ? results.length + run.notices.length : undefined,
+    count: run?.log ? run.log.length : run ? results.length + run.notices.length : undefined,
   });
   if (session?.explain || session?.explaining || session?.explainError) tabs.push({ id: "explain", label: "Plan" });
 
@@ -138,19 +141,30 @@ export function ConsoleOutputPane({ tab, session }: { tab: Tab; session: Console
         {/* an EXPLAIN before anything ran still has its plan to show */}
         {!ran && current !== "explain" ? (
           <div className="grid flex-1 place-items-center p-6 text-center text-fg-3">
-            <p className="flex flex-wrap items-center justify-center gap-1.5">
-              Run the statement at the caret
-              <span className="inline-flex gap-1">
-                <Kbd>Ctrl</Kbd>
-                <Kbd>Enter</Kbd>
-              </span>
-              , or all of them
-              <span className="inline-flex gap-1">
-                <Kbd>Ctrl</Kbd>
-                <Kbd>Shift</Kbd>
-                <Kbd>Enter</Kbd>
-              </span>
-            </p>
+            {engine === "psql" ? (
+              <p className="flex flex-wrap items-center justify-center gap-1.5">
+                psql runs the whole script
+                <span className="inline-flex gap-1">
+                  <Kbd>Ctrl</Kbd>
+                  <Kbd>Enter</Kbd>
+                </span>
+                , or the text you select
+              </p>
+            ) : (
+              <p className="flex flex-wrap items-center justify-center gap-1.5">
+                Run the statement at the caret
+                <span className="inline-flex gap-1">
+                  <Kbd>Ctrl</Kbd>
+                  <Kbd>Enter</Kbd>
+                </span>
+                , or all of them
+                <span className="inline-flex gap-1">
+                  <Kbd>Ctrl</Kbd>
+                  <Kbd>Shift</Kbd>
+                  <Kbd>Enter</Kbd>
+                </span>
+              </p>
+            )}
           </div>
         ) : current === "explain" ? (
           session?.explaining ? (
@@ -203,9 +217,46 @@ function StatementError({ result }: { result: StatementResult }) {
   );
 }
 
+/** psql's lines: what it printed, its errors and notices, and the app's notes. */
+function PsqlLog({ lines, running }: { lines: LogLine[]; running: boolean }) {
+  const end = useRef<HTMLDivElement>(null);
+  // Follows the output while it comes, like a terminal.
+  useEffect(() => {
+    if (running) end.current?.scrollIntoView({ block: "nearest" });
+  }, [lines.length, running]);
+  return (
+    <div className="min-h-0 flex-1 overflow-auto py-2 font-data text-data" role="log" aria-live="polite">
+      {lines.map((l, i) => (
+        <div key={i} className="flex gap-3.5 px-3.5 leading-5">
+          <span className="w-14 shrink-0 text-right text-fg-3 tabular-nums">{formatDuration(l.ms)}</span>
+          <span
+            className={cn(
+              "min-w-0 whitespace-pre-wrap break-words",
+              l.stream === "err" ? (/^psql:[^ ]*: (ERROR|FATAL)|^psql: error/.test(l.text) ? "text-danger" : "text-warn") : l.stream === "info" ? "text-fg-3" : "text-fg",
+            )}
+          >
+            {l.text}
+          </span>
+        </div>
+      ))}
+      {running && (
+        <div className="flex items-center gap-3.5 px-3.5 leading-5 text-fg-3">
+          <span className="w-14" />
+          <LoaderCircle className="size-3 animate-spin" aria-hidden />
+          <span>Running; psql&apos;s output shows here as it comes</span>
+        </div>
+      )}
+      <div ref={end} />
+    </div>
+  );
+}
+
 function Messages({ session }: { session: ConsoleSession }) {
   const run = session.run;
+  if (session.running && session.liveLog.length > 0) return <PsqlLog lines={session.liveLog} running />;
+  if (!run && session.liveLog.length > 0) return <PsqlLog lines={session.liveLog} running={false} />;
   if (!run) return null;
+  if (run.log) return <PsqlLog lines={run.log} running={false} />;
   return (
     <div className="min-h-0 flex-1 overflow-auto py-2 font-data text-data">
       {run.results.map((r) => (
