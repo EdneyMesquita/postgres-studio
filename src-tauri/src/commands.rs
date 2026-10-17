@@ -14,6 +14,7 @@ use crate::connections_io;
 use crate::error::{AppError, AppResult};
 use crate::export;
 use crate::logging::{self, logged, Op};
+use crate::mcp_server::{ClientTarget, McpConfig, McpServer, McpStatus, RequestChoice};
 use crate::models::{
     validate_color, ConnectionHandle, ConnectionImportPreview, ConnectionProfile,
     ConnectionProfileInput, ConnectionProfileMeta, ConnectionSource, ConnectionTestResult,
@@ -1496,4 +1497,56 @@ mod tests {
         assert!(state.connection_store.list().is_empty());
         std::fs::remove_dir_all(dir).ok();
     }
+}
+
+#[tauri::command]
+pub async fn mcp_set_config(mcp: State<'_, McpServer>, config: McpConfig) -> AppResult<McpStatus> {
+    logged("mcp_set_config", mcp.set_config(config).await)
+}
+
+#[tauri::command]
+pub fn mcp_status(mcp: State<McpServer>) -> McpStatus {
+    mcp.status()
+}
+
+#[tauri::command]
+pub fn mcp_token(mcp: State<McpServer>) -> AppResult<String> {
+    logged("mcp_token", mcp.token())
+}
+
+#[tauri::command]
+pub fn mcp_regenerate_token(mcp: State<McpServer>) -> AppResult<String> {
+    logged("mcp_regenerate_token", mcp.regenerate_token())
+}
+
+#[tauri::command]
+pub fn mcp_answer(
+    mcp: State<McpServer>,
+    request_id: String,
+    choice: RequestChoice,
+) -> AppResult<()> {
+    mcp.answer(&request_id, choice)
+}
+
+#[tauri::command]
+pub fn mcp_disconnect_client(mcp: State<McpServer>, client_id: String) -> AppResult<()> {
+    mcp.disconnect_client(&client_id)
+}
+
+#[tauri::command]
+pub async fn mcp_client_targets(mcp: State<'_, McpServer>) -> AppResult<Vec<ClientTarget>> {
+    Ok(mcp.client_targets().await)
+}
+
+#[tauri::command]
+pub async fn mcp_register_client(mcp: State<'_, McpServer>, id: String) -> AppResult<ClientTarget> {
+    logged("mcp_register_client", mcp.register_client(&id).await)
+}
+
+#[tauri::command]
+pub async fn mcp_unregister_client(
+    mcp: State<'_, McpServer>,
+    id: String,
+) -> AppResult<ClientTarget> {
+    logged("mcp_unregister_client", mcp.unregister_client(&id).await)
 }

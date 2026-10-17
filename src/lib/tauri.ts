@@ -47,6 +47,7 @@ import type {
   AssistantStartInput,
   DetectedAgent,
 } from "../types/assistant";
+import type { McpClientTarget, McpConfig, McpRequestChoice, McpStatus } from "../types/mcp";
 
 export const api = {
   listConnectionProfiles: () => invoke<ConnectionProfileMeta[]>("list_connection_profiles"),
@@ -276,6 +277,18 @@ export const api = {
     options: CsvOptions,
     executionId: string,
   ) => invoke<CsvImportSummary>("import_csv", { sessionId, database, schema, table, path, mapping, options, executionId }),
+
+  /** Applies the MCP server's settings: starts, stops or restarts it. */
+  mcpSetConfig: (config: McpConfig) => invoke<McpStatus>("mcp_set_config", { config }),
+  mcpStatus: () => invoke<McpStatus>("mcp_status"),
+  mcpToken: () => invoke<string>("mcp_token"),
+  mcpRegenerateToken: () => invoke<string>("mcp_regenerate_token"),
+  mcpAnswer: (requestId: string, choice: McpRequestChoice) =>
+    invoke<void>("mcp_answer", { requestId, choice }),
+  mcpDisconnectClient: (clientId: string) => invoke<void>("mcp_disconnect_client", { clientId }),
+  mcpClientTargets: () => invoke<McpClientTarget[]>("mcp_client_targets"),
+  mcpRegisterClient: (id: string) => invoke<McpClientTarget>("mcp_register_client", { id }),
+  mcpUnregisterClient: (id: string) => invoke<McpClientTarget>("mcp_unregister_client", { id }),
 };
 
 import type { GraphCatalog, PsqlInfo, PsqlOptions } from "../types/pg";

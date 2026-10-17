@@ -39,6 +39,11 @@ use uuid::Uuid;
 use crate::error::{AppError, AppResult};
 
 pub use detect::DetectedAgent;
+// Shared with the MCP server for external clients (`crate::mcp_server`).
+pub(crate) use tools::{
+    agent_sql, denied_function, describe, int_arg, plural, read_only_with, resolve, str_arg,
+    tables_listing, thousands, truncate,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

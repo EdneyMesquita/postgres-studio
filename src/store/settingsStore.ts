@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import type { McpCapability, McpLevel, McpPolicy } from "../types/mcp";
 
 /** Choices for the rows a new table tab asks for. */
 export const PAGE_SIZES = [50, 100, 200, 500, 1000] as const;
@@ -28,6 +29,30 @@ export const PSQL_TIMEOUTS: { value: number | null; label: string }[] = [
   { value: null, label: "No limit" },
 ];
 
+/** The MCP server's settings, pushed to the backend as they change. */
+export interface McpSettings {
+  enabled: boolean;
+  port: number;
+  caps: Record<Exclude<McpCapability, "browse">, McpPolicy>;
+  /** Per saved connection id; one missing here has no access. */
+  connections: Record<string, McpLevel>;
+  /** Capabilities answered "Always allow here", per connection id. */
+  always: Record<string, McpCapability[]>;
+}
+
+export const DEFAULT_MCP_PORT = 47432;
+
+export const DEFAULT_MCP_CAPS: McpSettings["caps"] = {
+  read: "allow",
+  write: "ask",
+  ddl: "ask",
+  script: "off",
+  connList: "allow",
+  connEdit: "ask",
+  connDelete: "off",
+  saveScript: "allow",
+};
+
 interface SettingsState {
   /** The limit a new table tab starts with. */
   pageSize: number;
@@ -45,6 +70,13 @@ interface SettingsState {
   forgetTabEngine: (tabId: string) => void;
   psql: PsqlSettings;
   setPsql: (patch: Partial<PsqlSettings>) => void;
+
+  mcp: McpSettings;
+  setMcp: (patch: Partial<McpSettings>) => void;
+  setMcpCap: (cap: keyof McpSettings["caps"], policy: McpPolicy) => void;
+  setMcpLevels: (connectionIds: string[], level: McpLevel) => void;
+  addMcpAlways: (connectionId: string, cap: McpCapability) => void;
+  removeMcpAlways: (connectionId: string, cap: McpCapability) => void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -68,6 +100,36 @@ export const useSettingsStore = create<SettingsState>()(
         }),
       psql: { path: null, extraArgs: "", loadRc: true, timeoutSecs: 600 },
       setPsql: (patch) => set((s) => ({ psql: { ...s.psql, ...patch } })),
+
+      mcp: {
+        enabled: false,
+        port: DEFAULT_MCP_PORT,
+        caps: DEFAULT_MCP_CAPS,
+        connections: {},
+        always: {},
+      },
+      setMcp: (patch) => set((s) => ({ mcp: { ...s.mcp, ...patch } })),
+      setMcpCap: (cap, policy) => set((s) => ({ mcp: { ...s.mcp, caps: { ...s.mcp.caps, [cap]: policy } } })),
+      setMcpLevels: (ids, level) =>
+        set((s) => {
+          const connections = { ...s.mcp.connections };
+          for (const id of ids) connections[id] = level;
+          return { mcp: { ...s.mcp, connections } };
+        }),
+      addMcpAlways: (connectionId, cap) =>
+        set((s) => {
+          const caps = s.mcp.always[connectionId] ?? [];
+          if (caps.includes(cap)) return s;
+          return { mcp: { ...s.mcp, always: { ...s.mcp.always, [connectionId]: [...caps, cap] } } };
+        }),
+      removeMcpAlways: (connectionId, cap) =>
+        set((s) => {
+          const caps = (s.mcp.always[connectionId] ?? []).filter((c) => c !== cap);
+          const always = { ...s.mcp.always };
+          if (caps.length) always[connectionId] = caps;
+          else delete always[connectionId];
+          return { mcp: { ...s.mcp, always } };
+        }),
     }),
     {
       name: "postgres-studio-settings",
@@ -77,11 +139,17 @@ export const useSettingsStore = create<SettingsState>()(
         consoleRowLimit: s.consoleRowLimit,
         consoleEngine: s.consoleEngine,
         psql: s.psql,
+        mcp: s.mcp,
       }),
-      // Settings added later get their defaults.
+      // Settings and capabilities added later get their defaults.
       merge: (persisted, current) => {
         const p = (persisted ?? {}) as Partial<SettingsState>;
-        return { ...current, ...p, psql: { ...current.psql, ...p.psql } };
+        return {
+          ...current,
+          ...p,
+          psql: { ...current.psql, ...p.psql },
+          mcp: { ...current.mcp, ...p.mcp, caps: { ...DEFAULT_MCP_CAPS, ...p.mcp?.caps } },
+        };
       },
     },
   ),

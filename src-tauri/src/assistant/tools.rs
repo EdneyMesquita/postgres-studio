@@ -558,13 +558,7 @@ pub(crate) fn agent_sql(sql: &str) -> Result<String, String> {
     ) {
         return Err(format!("Only read statements run here, not {command}."));
     }
-    let lower = stmt.text.to_ascii_lowercase();
-    if let Some(f) = DENIED_FUNCTIONS.iter().find(|f| {
-        lower.match_indices(*f).any(|(at, _)| {
-            let before = lower[..at].chars().next_back();
-            !before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
-        })
-    }) {
+    if let Some(f) = denied_function(&stmt.text) {
         return Err(format!(
             "{f} acts on the server and isn't available to the Assistant."
         ));
@@ -572,17 +566,40 @@ pub(crate) fn agent_sql(sql: &str) -> Result<String, String> {
     Ok(stmt.text.clone())
 }
 
-struct ReadRows {
-    columns: Vec<String>,
-    rows: Vec<Vec<Option<String>>>,
-    total: u64,
+/// The first function `sql` calls that acts on the server rather than on
+/// data (ending sessions, reading server files), which a read-only
+/// transaction would still run.
+pub(crate) fn denied_function(sql: &str) -> Option<&'static str> {
+    let lower = sql.to_ascii_lowercase();
+    DENIED_FUNCTIONS.iter().copied().find(|f| {
+        lower.match_indices(*f).any(|(at, _)| {
+            let before = lower[..at].chars().next_back();
+            !before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+    })
+}
+
+pub(crate) struct ReadRows {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<Option<String>>>,
+    pub total: u64,
 }
 
 /// Runs `sql` in a read-only transaction that is always rolled back,
 /// keeping at most `keep` rows (and counting up to the dry-run cap).
 async fn read_only(client: &PgClient, sql: &str, keep: usize) -> Result<ReadRows, String> {
+    read_only_with(client, sql, keep, STATEMENT_TIMEOUT).await
+}
+
+/// `read_only` with the server-side `statement_timeout` given, e.g. `30s`.
+pub(crate) async fn read_only_with(
+    client: &PgClient,
+    sql: &str,
+    keep: usize,
+    timeout: &str,
+) -> Result<ReadRows, String> {
     let batch = format!(
-        "BEGIN READ ONLY;\nSET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}';\nSET LOCAL lock_timeout = '2s';\n{sql};\nROLLBACK"
+        "BEGIN READ ONLY;\nSET LOCAL statement_timeout = '{timeout}';\nSET LOCAL lock_timeout = '2s';\n{sql};\nROLLBACK"
     );
     let result = async {
         let stream = client.client.simple_query_raw(&batch).await?;
@@ -623,7 +640,7 @@ async fn read_only(client: &PgClient, sql: &str, keep: usize) -> Result<ReadRows
 }
 
 /// `schema.table` or `table` to the schema and name it means.
-async fn resolve(client: &PgClient, table: &str) -> Result<(String, String), String> {
+pub(crate) async fn resolve(client: &PgClient, table: &str) -> Result<(String, String), String> {
     let (schema, name) = match table.split_once('.') {
         Some((s, n)) => (Some(s.trim_matches('"')), n.trim_matches('"')),
         None => (None, table.trim_matches('"')),
@@ -644,6 +661,15 @@ async fn resolve(client: &PgClient, table: &str) -> Result<(String, String), Str
             "There is no table or view named {table}. Use list_tables."
         )),
     }
+}
+
+/// The tables, views and materialized views, one per line, and how many.
+pub(crate) async fn tables_listing(
+    client: &PgClient,
+    schema: Option<&str>,
+) -> Result<(String, String), String> {
+    let done = list_tables(client, schema).await?;
+    Ok((done.text, done.meta))
 }
 
 async fn list_tables(client: &PgClient, schema: Option<&str>) -> Result<Done, String> {
@@ -804,7 +830,7 @@ fn timescale_facts(info: &catalog::TableInfo) -> String {
     out
 }
 
-fn describe(info: &catalog::TableInfo, indexes: bool) -> String {
+pub(crate) fn describe(info: &catalog::TableInfo, indexes: bool) -> String {
     let mut out = format!(
         "{}.{} ({}{})\nColumns:\n",
         info.schema,
@@ -883,14 +909,14 @@ fn describe(info: &catalog::TableInfo, indexes: bool) -> String {
     out
 }
 
-fn str_arg(args: &Value, key: &str) -> Option<String> {
+pub(crate) fn str_arg(args: &Value, key: &str) -> Option<String> {
     args.get(key)
         .and_then(Value::as_str)
         .map(str::to_string)
         .filter(|s| !s.is_empty())
 }
 
-fn int_arg(args: &Value, key: &str, default: i64, max: i64) -> i64 {
+pub(crate) fn int_arg(args: &Value, key: &str, default: i64, max: i64) -> i64 {
     let value = args.get(key).and_then(|v| {
         v.as_i64()
             .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
@@ -911,7 +937,7 @@ pub(crate) fn thousands(n: u64) -> String {
     out
 }
 
-fn plural(n: u64, one: &str, many: &str) -> String {
+pub(crate) fn plural(n: u64, one: &str, many: &str) -> String {
     if n == 1 {
         format!("1 {one}")
     } else {

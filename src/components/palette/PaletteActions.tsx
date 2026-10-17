@@ -9,6 +9,7 @@ import {
   Moon,
   PanelRight,
   Plus,
+  Server,
   Settings,
   SlidersHorizontal,
   Sparkles,
@@ -161,6 +162,12 @@ export function PaletteActions({ search, run }: PaletteActionsProps) {
       label: "Settings",
       shortcut: "Ctrl ,",
       perform: () => useUiStore.getState().setSettingsSection("general"),
+    },
+    {
+      id: "mcp-settings",
+      icon: <Server />,
+      label: "MCP server settings",
+      perform: () => useUiStore.getState().setSettingsSection("mcp"),
     },
     {
       id: "transfer",

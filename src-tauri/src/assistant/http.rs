@@ -193,6 +193,41 @@ async fn read_chunked<R: AsyncBufRead + Unpin>(reader: &mut R) -> Result<Vec<u8>
     }
 }
 
+/// Whether a `Host` header names this server: 127.0.0.1 or localhost, on
+/// its port.
+pub(crate) fn host_allowed(host: Option<&str>, port: u16) -> bool {
+    let Some(host) = host else {
+        return false;
+    };
+    let (name, host_port) = match host.rsplit_once(':') {
+        Some((name, p)) => (name, Some(p)),
+        None => (host, None),
+    };
+    let name_ok = name == "127.0.0.1" || name.eq_ignore_ascii_case("localhost");
+    let port_ok = host_port.is_none_or(|p| p.parse::<u16>().ok() == Some(port));
+    name_ok && port_ok
+}
+
+/// Browsers send `Origin`; the CLIs don't. One that's present must be
+/// this server's own.
+pub(crate) fn origin_allowed(origin: Option<&str>, port: u16) -> bool {
+    match origin {
+        None => true,
+        Some(origin) => origin
+            .strip_prefix("http://")
+            .is_some_and(|host| host_allowed(Some(host), port)),
+    }
+}
+
+pub(crate) fn bearer(head: &Head) -> Option<&str> {
+    let value = head.header("authorization")?.trim();
+    let (scheme, token) = value.split_once(' ')?;
+    scheme
+        .eq_ignore_ascii_case("bearer")
+        .then(|| token.trim())
+        .filter(|t| !t.is_empty())
+}
+
 pub(crate) struct Response {
     pub status: u16,
     pub content_type: Option<&'static str>,
