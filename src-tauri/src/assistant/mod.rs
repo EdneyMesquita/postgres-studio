@@ -6,7 +6,8 @@
 //! Postgres Studio never holds an API key - the CLI brings its own sign-in.
 //!
 //! Pieces:
-//! - `detect` finds the CLIs (GUI apps don't inherit the login shell's PATH).
+//! - `detect` finds the CLIs (GUI apps don't inherit the login shell's PATH);
+//!   the PostgreSQL client tools are looked for on the same PATH.
 //! - `agents` spawns them, feeds them turns and turns their JSONL output into
 //!   `assistant-event`s.
 //! - `mcp`/`http` serve the tools over streamable HTTP, one bearer token per
@@ -15,8 +16,8 @@
 //! - `prompt` builds the system prompt.
 
 mod agents;
-mod detect;
-mod http;
+pub(crate) mod detect;
+pub(crate) mod http;
 mod mcp;
 mod models;
 mod prompt;

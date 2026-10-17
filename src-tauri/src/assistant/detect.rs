@@ -152,7 +152,7 @@ fn candidate_names(kind: AgentKind) -> &'static [&'static str] {
     }
 }
 
-fn is_executable(path: &Path) -> bool {
+pub(crate) fn is_executable(path: &Path) -> bool {
     let Ok(meta) = std::fs::metadata(path) else {
         return false;
     };
@@ -172,7 +172,7 @@ pub(crate) async fn find_binary(kind: AgentKind) -> Option<PathBuf> {
     find_in(search_dirs().await, candidate_names(kind))
 }
 
-fn find_in(dirs: &[PathBuf], names: &[&str]) -> Option<PathBuf> {
+pub(crate) fn find_in(dirs: &[PathBuf], names: &[&str]) -> Option<PathBuf> {
     dirs.iter()
         .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
         .find(|path| is_executable(path))
