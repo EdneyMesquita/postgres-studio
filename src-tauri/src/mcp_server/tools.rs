@@ -21,6 +21,7 @@ use tokio_postgres::SimpleQueryMessage;
 
 mod many;
 
+use super::history::{self, HistoryEntry, HistoryFilter};
 use super::policy::{self, Answer, Cap, Decision, Request};
 use super::tasks::{self, Phase, Task};
 use super::{
@@ -54,6 +55,8 @@ const MAX_ROWS: i64 = 200;
 const SHOWN_ROWS: usize = 50;
 const DEFAULT_SCRIPT_MS: i64 = 60_000;
 const MAX_SCRIPT_MS: i64 = 600_000;
+const DEFAULT_HISTORY: i64 = 20;
+const MAX_HISTORY: i64 = 200;
 const DEFAULT_TASK_WAIT_MS: i64 = 30_000;
 /// Under the minute many clients wait for a request.
 const MAX_TASK_WAIT_MS: i64 = 45_000;
@@ -116,6 +119,7 @@ pub(crate) enum Tool {
     UpdateConnection,
     DeleteConnection,
     SaveScript,
+    GetHistory,
     GetTask,
     CancelTask,
 }
@@ -130,7 +134,7 @@ enum Scope {
 }
 
 impl Tool {
-    const ALL: [Tool; 17] = [
+    const ALL: [Tool; 18] = [
         Tool::ListConnections,
         Tool::ListDatabases,
         Tool::ListSchemas,
@@ -146,6 +150,7 @@ impl Tool {
         Tool::UpdateConnection,
         Tool::DeleteConnection,
         Tool::SaveScript,
+        Tool::GetHistory,
         Tool::GetTask,
         Tool::CancelTask,
     ];
@@ -171,6 +176,7 @@ impl Tool {
             Tool::UpdateConnection => "update_connection",
             Tool::DeleteConnection => "delete_connection",
             Tool::SaveScript => "save_script",
+            Tool::GetHistory => "get_history",
             Tool::GetTask => "get_task",
             Tool::CancelTask => "cancel_task",
         }
@@ -192,6 +198,8 @@ impl Tool {
             Tool::CreateConnection | Tool::UpdateConnection => Cap::ConnEdit,
             Tool::DeleteConnection => Cap::ConnDelete,
             Tool::SaveScript => Cap::SaveScript,
+            // It shows what ran on the connections, SQL included.
+            Tool::GetHistory => Cap::Read,
         }
     }
 
@@ -200,6 +208,7 @@ impl Tool {
             Tool::ListConnections
             | Tool::CreateConnection
             | Tool::SaveScript
+            | Tool::GetHistory
             | Tool::GetTask
             | Tool::CancelTask
             // its connections are checked one by one, in `many`
@@ -220,6 +229,7 @@ impl Tool {
                 | Tool::UpdateConnection
                 | Tool::DeleteConnection
                 | Tool::SaveScript
+                | Tool::GetHistory
                 | Tool::GetTask
                 | Tool::CancelTask
                 // talks to several, in `many`
@@ -436,6 +446,17 @@ fn all_definitions() -> Vec<Value> {
             "annotations": edit,
         }),
         json!({
+            "name": "get_history",
+            "description": "What MCP clients changed through Postgres Studio, newest first, as kept on this computer when the user keeps a history: every write, schema change, script, and connection edit that ran, with its SQL, time, connection and environment, who approved it, and what it changed or why it failed. Markdown is ready to paste into a ticket or pull request. Only connections you may read are shown.",
+            "inputSchema": { "type": "object", "properties": {
+                "connection_id": { "type": "string", "description": "Only this connection's entries." },
+                "since": { "type": "string", "description": "Only entries from then on: a date (2026-11-16) or an RFC 3339 date-time." },
+                "limit": { "type": "integer", "minimum": 1, "maximum": MAX_HISTORY, "default": DEFAULT_HISTORY },
+                "format": { "type": "string", "enum": ["markdown", "json"], "default": "markdown" },
+            } },
+            "annotations": read,
+        }),
+        json!({
             "name": "get_task",
             "description": "Follow a call that went on in the background: a call that takes more than about 40 seconds (waiting for the user's approval, or a long script or query) answers with a task_id instead of its result. This waits up to wait_ms for it to end and returns its result, or else its status and what it reported so far (a script's finished statements and notices).",
             "inputSchema": {
@@ -472,6 +493,11 @@ struct Target {
     database: Option<String>,
     /// What it does there, e.g. "UPDATE public.customers".
     detail: Option<String>,
+    /// A call on several connections: their names, ids and environments,
+    /// for the history.
+    names: Option<String>,
+    ids: Vec<String>,
+    environments: Option<String>,
 }
 
 impl Target {
@@ -532,11 +558,14 @@ struct Call<'a> {
     task: Arc<Task>,
     /// A read that lost its connection and ran again.
     retried: bool,
+    /// What runs, as the approval card shows it, for the history.
+    code: Option<String>,
 }
 
 impl Call<'_> {
     /// Reports the call to the windows and builds the output.
     fn finish(&self, result: &str, label: String, meta: String, text: String) -> ToolOutput {
+        self.record(result, &label, &meta, &text);
         self.inner.emit(
             ACTIVITY_EVENT,
             &ActivityEvent {
@@ -553,6 +582,45 @@ impl Call<'_> {
         ToolOutput {
             text: truncate(text, MAX_OUTPUT),
             is_error: result != "ok",
+        }
+    }
+
+    /// Keeps a call that ran and could change something - and every
+    /// script, read-only and dry runs too - in the history, when the user
+    /// keeps one.
+    fn record(&self, result: &str, label: &str, meta: &str, text: &str) {
+        let script = matches!(self.tool, Tool::RunScript | Tool::RunScriptOnConnections);
+        if self.task.phase() != Phase::Running || !(self.task.changes_data || script) {
+            return;
+        }
+        if !self.inner.config().history {
+            return;
+        }
+        let profile = self.target.profile.as_ref();
+        let failed = result != "ok";
+        let entry = HistoryEntry {
+            at: now_ms(),
+            client: self.client.name.clone(),
+            tool: self.tool.name().to_string(),
+            connection_id: self.target.connection_id.clone(),
+            connection_ids: self.target.ids.clone(),
+            connection_name: profile
+                .map(|p| p.name.clone())
+                .or_else(|| self.target.names.clone()),
+            environment: profile
+                .and_then(|p| p.environment)
+                .map(|e| e.id().to_string())
+                .or_else(|| self.target.environments.clone()),
+            target: self.target.text(),
+            code: self.code.clone().unwrap_or_default(),
+            outcome: if failed { "error" } else { "ok" }.to_string(),
+            summary: meta.to_string(),
+            error: failed.then(|| logging::scrub_credentials(text)),
+            approval: label.split(" · ").next().unwrap_or(label).to_string(),
+            duration_ms: self.started.elapsed().as_millis() as u64,
+        };
+        if let Err(e) = self.inner.history.append(entry) {
+            log::warn!("MCP server: couldn't add to the history: {e}");
         }
     }
 
@@ -660,6 +728,7 @@ pub(crate) async fn call(
             started: Instant::now(),
             task: followed,
             retried: false,
+            code: None,
         };
         run_call(&mut call, &args).await
     };
@@ -755,6 +824,7 @@ async fn run_call(call: &mut Call<'_>, args: &Value) -> ToolOutput {
         Ok(plan) => plan,
         Err(e) => return call.fail(e),
     };
+    call.code = Some(plan.code.clone());
 
     let label = match decision {
         Decision::Allow => "Allowed",
@@ -1265,6 +1335,7 @@ async fn execute(
         Tool::UpdateConnection => update_connection(call, args).await,
         Tool::DeleteConnection => delete_connection(call).await,
         Tool::SaveScript => save_script(call, args),
+        Tool::GetHistory => get_history(call, args),
         Tool::GetTask | Tool::CancelTask => unreachable!("answered before a call starts"),
         Tool::RunScriptOnConnections => unreachable!("run by many::run"),
     }
@@ -1600,6 +1671,57 @@ async fn run_script(
         text: text.trim_end().to_string(),
         meta,
     })
+}
+
+/// get_history: the history, as far as the client may read it.
+fn get_history(call: &Call<'_>, args: &Value) -> AppResult<Done> {
+    let config = call.inner.config();
+    let since = match str_arg(args, "since") {
+        None => None,
+        Some(text) => Some(parse_since(&text)?),
+    };
+    let limit = int_arg(args, "limit", DEFAULT_HISTORY, MAX_HISTORY) as usize;
+    let readable = |id: &String| policy::level_of(&config, id) >= Level::Read;
+    let entries: Vec<HistoryEntry> = call
+        .inner
+        .history
+        .list(&HistoryFilter {
+            connection_id: str_arg(args, "connection_id"),
+            since,
+            limit: None,
+        })?
+        .into_iter()
+        .filter(|e| {
+            e.connection_id.as_ref().is_none_or(readable) && e.connection_ids.iter().all(readable)
+        })
+        .take(limit)
+        .collect();
+    let n = plural(entries.len() as u64, "entry", "entries");
+    let mut text = match str_arg(args, "format").as_deref() {
+        Some("json") => history::json(&entries),
+        _ => history::markdown(&entries),
+    };
+    if !config.history {
+        text.insert_str(
+            0,
+            "(The user has turned the history off in Postgres Studio: new calls aren't kept.)\n\n",
+        );
+    }
+    Ok(Done { text, meta: n })
+}
+
+/// A date (`2026-11-16`, from midnight UTC) or an RFC 3339 date-time.
+fn parse_since(text: &str) -> AppResult<u64> {
+    use time::format_description::well_known::Rfc3339;
+    let text = text.trim();
+    let full = if text.len() == 10 {
+        format!("{text}T00:00:00Z")
+    } else {
+        text.to_string()
+    };
+    time::OffsetDateTime::parse(&full, &Rfc3339)
+        .map(|d| (d.unix_timestamp_nanos() / 1_000_000).max(0) as u64)
+        .map_err(|_| invalid("since must be a date like 2026-11-16 or an RFC 3339 date-time."))
 }
 
 // --- Saved connections ---
@@ -2130,6 +2252,7 @@ pub(crate) mod tests {
             always: HashMap::new(),
             alerts: Default::default(),
             confirm_production: true,
+            history: true,
         }
     }
 
@@ -2392,6 +2515,7 @@ pub(crate) mod tests {
             started: Instant::now(),
             task: Task::new("s1", "query", false),
             retried: false,
+            code: None,
         };
         let args = json!({ "sql": "SELECT pg_terminate_backend(42)" });
         let error = plan(&mut call, &args, None)
@@ -2528,6 +2652,17 @@ pub(crate) mod tests {
         assert!(bool_arg(&json!({ "analyze": true }), "analyze"));
         assert!(!bool_arg(&json!({ "analyze": "no" }), "analyze"));
         assert!(!bool_arg(&json!({}), "analyze"));
+    }
+
+    #[test]
+    fn history_since_takes_a_date_or_a_date_time() {
+        assert_eq!(parse_since("1970-01-02").unwrap(), 86_400_000);
+        assert_eq!(parse_since("1970-01-01T00:00:01Z").unwrap(), 1_000);
+        assert_eq!(
+            parse_since("1970-01-01T00:00:01-03:00").unwrap(),
+            10_801_000
+        );
+        assert!(parse_since("yesterday").is_err());
     }
 
     #[test]
@@ -2813,6 +2948,7 @@ mod live_tests {
                 always: HashMap::new(),
                 alerts: Default::default(),
                 confirm_production: true,
+                history: true,
             },
         );
         let schema = format!("mcp_live_{}", uuid::Uuid::new_v4().simple());
@@ -3002,6 +3138,84 @@ mod live_tests {
             "{}",
             out.text
         );
+        drop_scratch(&inner, &schema).await;
+    }
+
+    /// Writes and scripts that ran are kept with their SQL; reads and
+    /// refusals aren't; get_history hands them back, only for connections
+    /// the client may read.
+    #[tokio::test]
+    #[ignore = "needs POSTGRES_STUDIO_TEST_URI"]
+    async fn the_history_keeps_what_ran() {
+        let (_host, inner, schema) = setup(Policy::Allow).await;
+        let update = format!("UPDATE {schema}.orders SET status = 'late' WHERE id = 1");
+        run(&inner, "execute", on(json!({ "sql": update }))).await;
+        run(
+            &inner,
+            "query",
+            on(json!({ "sql": format!("SELECT * FROM {schema}.orders") })),
+        )
+        .await;
+        let count = format!("SELECT count(*) FROM {schema}.orders");
+        run(
+            &inner,
+            "run_script",
+            on(json!({ "sql": count, "read_only": true })),
+        )
+        .await;
+        inner
+            .config
+            .lock()
+            .unwrap()
+            .caps
+            .insert("write".into(), Policy::Off);
+        run(
+            &inner,
+            "execute",
+            on(json!({ "sql": format!("DELETE FROM {schema}.orders") })),
+        )
+        .await;
+
+        let entries = inner.history.list(&HistoryFilter::default()).unwrap();
+        let tools: Vec<&str> = entries.iter().map(|e| e.tool.as_str()).collect();
+        assert_eq!(tools, ["run_script", "execute"]);
+        assert_eq!(entries[1].code, update);
+        assert_eq!(entries[1].summary, "UPDATE 1");
+        assert_eq!(entries[1].connection_name.as_deref(), Some("Live"));
+        assert_eq!(entries[0].summary, "read-only, 1 statement");
+
+        let out = run(
+            &inner,
+            "get_history",
+            json!({ "limit": 2, "since": "2020-01-01" }),
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            out.text
+                .starts_with("# Changes made through Postgres Studio's MCP server\n\n2 calls"),
+            "{}",
+            out.text
+        );
+        assert!(
+            out.text.contains(&format!("```sql\n{update}\n```")),
+            "{}",
+            out.text
+        );
+        inner
+            .config
+            .lock()
+            .unwrap()
+            .connections
+            .insert("live".into(), Level::None);
+        let out = run(&inner, "get_history", json!({})).await;
+        assert!(out.text.contains("Nothing recorded"), "{}", out.text);
+        inner
+            .config
+            .lock()
+            .unwrap()
+            .connections
+            .insert("live".into(), Level::Write);
         drop_scratch(&inner, &schema).await;
     }
 

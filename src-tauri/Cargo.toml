@@ -55,7 +55,7 @@ rustls-native-certs = "0.8"
 tauri-plugin-dialog = "2.7.3"
 tauri-plugin-log = "2"
 log = "0.4"
-time = { version = "0.3", features = ["local-offset"] }
+time = { version = "0.3", features = ["local-offset", "parsing"] }
 toml_edit = "0.25.17"
 tauri-plugin-window-state = "~2.4"
 

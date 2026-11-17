@@ -149,6 +149,16 @@ pub(super) async fn run(call: &mut Call<'_>, args: &Value) -> ToolOutput {
         .collect();
     let mut ids: Vec<String> = targets.iter().map(|t| t.connection_id.clone()).collect();
     ids.dedup();
+    let mut environments: Vec<&str> = profiles
+        .iter()
+        .filter_map(|p| p.environment.map(Environment::id))
+        .collect();
+    environments.sort_unstable();
+    environments.dedup();
+    call.target.names = Some(places.join(", "));
+    call.target.ids = ids.clone();
+    call.target.environments = (!environments.is_empty()).then(|| environments.join(", "));
+    call.code = Some(sql.clone());
     // On production, every change is asked about; a dry run too.
     let guarded = config.confirm_production
         && cap == Cap::Script

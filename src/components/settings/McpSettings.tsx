@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Bot, Check, Copy, Eye, EyeOff, Lock, Sparkles, Volume2, X } from "lucide-react";
+import { save } from "@tauri-apps/plugin-dialog";
+import { Bot, Check, Copy, Download, Eye, EyeOff, Lock, Sparkles, Volume2, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { ConnectionChip } from "@/components/ui/ConnectionChip";
@@ -10,6 +11,7 @@ import { maskToken, mcpSnippet } from "@/lib/mcp";
 import { api } from "@/lib/tauri";
 import { playChime } from "@/lib/attention";
 import { cn } from "@/lib/utils";
+import { confirm } from "../../store/confirmStore";
 import { useConnectionsStore } from "../../store/connectionsStore";
 import { useMcpStore } from "../../store/mcpStore";
 import { DEFAULT_MCP_PORT, useSettingsStore, type McpSettings as McpSettingsValue } from "../../store/settingsStore";
@@ -41,7 +43,7 @@ const CAP_GROUPS: { title: string; rows: CapRow[] }[] = [
       {
         id: "read",
         label: "Run SELECT and EXPLAIN",
-        help: "In a read-only transaction, so nothing can change; capped at 200 rows per call.",
+        help: "In a read-only transaction, so nothing can change; capped at 200 rows per call. Also read-only scripts and the history.",
       },
     ],
   },
@@ -61,7 +63,7 @@ const CAP_GROUPS: { title: string; rows: CapRow[] }[] = [
       {
         id: "script",
         label: "Run any SQL",
-        help: "Several statements at once. A script can do anything the connection's role can, COMMIT included.",
+        help: "Several statements at once, on one connection or several. A script can do anything the connection's role can, COMMIT included; a dry run is rolled back but still takes locks.",
       },
     ],
   },
@@ -382,6 +384,80 @@ function Clients() {
   );
 }
 
+/** What clients changed, kept on this computer: on/off, export, clear. */
+function History() {
+  const mcp = useSettingsStore((s) => s.mcp);
+  const setMcp = useSettingsStore((s) => s.setMcp);
+  // a new entry may follow any call
+  const activity = useMcpStore((s) => s.activity.length);
+  const [count, setCount] = useState<number | null>(null);
+
+  useEffect(() => {
+    api.mcpHistoryCount().then(setCount, () => setCount(null));
+  }, [activity]);
+
+  async function exportHistory() {
+    const path = await save({
+      defaultPath: `postgres-studio-mcp-history-${new Date().toISOString().slice(0, 10)}.md`,
+      filters: [
+        { name: "Markdown", extensions: ["md"] },
+        { name: "JSON", extensions: ["json"] },
+      ],
+    });
+    if (!path) return;
+    try {
+      const n = await api.mcpHistoryExport(path, path.toLowerCase().endsWith(".json") ? "json" : "markdown");
+      toast.success(`Exported ${n} ${n === 1 ? "entry" : "entries"}`, { description: path });
+    } catch (e) {
+      toast.error("Couldn't export the history", { description: String(e) });
+    }
+  }
+
+  async function clearHistory() {
+    const ok = await confirm({
+      title: "Clear the history?",
+      message: "Every recorded change is deleted from this computer. Export it first if you need it.",
+      confirmLabel: "Clear",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api.mcpHistoryClear();
+      setCount(0);
+    } catch (e) {
+      toast.error("Couldn't clear the history", { description: String(e) });
+    }
+  }
+
+  return (
+    <>
+      <SectionTitle>History</SectionTitle>
+      <SwitchField
+        label="Keep a history of changes"
+        description="Every write, schema change, script and connection edit a client runs: its SQL, when, where, who approved it and what it changed. Kept on this computer, up to the last 5,000; clients can read it back for the connections they may read."
+        checked={mcp.history ?? true}
+        onCheckedChange={(history) => setMcp({ history })}
+      />
+      <div className="ml-10 flex flex-wrap items-center gap-2 text-sm text-fg-2">
+        <span className="mr-auto">
+          {count === null
+            ? ""
+            : count === 0
+              ? "Nothing recorded yet."
+              : `${count.toLocaleString()} ${count === 1 ? "entry" : "entries"} recorded.`}
+        </span>
+        <Button size="sm" variant="ghost" disabled={!count} onClick={() => void clearHistory()}>
+          Clear…
+        </Button>
+        <Button size="sm" disabled={!count} onClick={() => void exportHistory()}>
+          <Download />
+          Export…
+        </Button>
+      </div>
+    </>
+  );
+}
+
 const RESULT_TONE = { ok: "text-ok", warn: "text-warn", err: "text-danger" } as const;
 
 function Activity() {
@@ -578,6 +654,7 @@ export function McpSettings() {
 
         <Clients />
         <Activity />
+        <History />
       </div>
     </>
   );

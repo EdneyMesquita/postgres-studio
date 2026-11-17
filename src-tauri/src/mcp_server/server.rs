@@ -456,6 +456,7 @@ mod tests {
             always: HashMap::new(),
             alerts: Default::default(),
             confirm_production: true,
+            history: true,
         }
     }
 
