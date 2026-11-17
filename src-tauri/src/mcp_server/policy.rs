@@ -197,7 +197,18 @@ pub(crate) async fn ask(inner: &Inner, client: &ClientSession, request: &Request
         },
     );
     // The card waits in the app; the app may be behind other windows.
-    inner.host.call_attention();
+    let target = match &request.connection_name {
+        // titles already say "on" or "in" (UPDATE on public.customers)
+        Some(conn) => format!(" ({conn})"),
+        None => String::new(),
+    };
+    inner.call_attention(
+        &format!("{} is waiting for you", client.name),
+        &format!(
+            "{}{target}. Allow or deny it in Postgres Studio.",
+            request.title
+        ),
+    );
     let _withdraw = Withdraw {
         inner,
         request_id: &request_id,
@@ -243,6 +254,7 @@ impl Drop for Withdraw<'_> {
         if pending.is_some() {
             emit_closed(self.inner, self.request_id, "cancelled");
         }
+        self.inner.dismiss_attention();
     }
 }
 
@@ -333,6 +345,7 @@ pub(crate) mod tests {
                 .map(|(k, v)| (k.to_string(), *v))
                 .collect(),
             always: HashMap::new(),
+            alerts: Default::default(),
         }
     }
 

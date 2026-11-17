@@ -40,6 +40,14 @@ export interface McpSettings {
   always: Record<string, McpCapability[]>;
 }
 
+/** How Postgres Studio calls for attention when an MCP request waits. */
+export interface McpAlerts {
+  /** A short chime. */
+  sound: boolean;
+  /** The window comes to the front (or its taskbar entry flashes). */
+  focus: boolean;
+}
+
 export const DEFAULT_MCP_PORT = 47432;
 
 export const DEFAULT_MCP_CAPS: McpSettings["caps"] = {
@@ -76,6 +84,9 @@ interface SettingsState {
 
   mcp: McpSettings;
   setMcp: (patch: Partial<McpSettings>) => void;
+  /** What happens when an MCP request set to Ask waits for an answer. */
+  mcpAlerts: McpAlerts;
+  setMcpAlerts: (patch: Partial<McpAlerts>) => void;
   setMcpCap: (cap: keyof McpSettings["caps"], policy: McpPolicy) => void;
   setMcpLevels: (connectionIds: string[], level: McpLevel) => void;
   addMcpAlways: (connectionId: string, cap: McpCapability) => void;
@@ -114,6 +125,8 @@ export const useSettingsStore = create<SettingsState>()(
         always: {},
       },
       setMcp: (patch) => set((s) => ({ mcp: { ...s.mcp, ...patch } })),
+      mcpAlerts: { sound: true, focus: true },
+      setMcpAlerts: (patch) => set((s) => ({ mcpAlerts: { ...s.mcpAlerts, ...patch } })),
       setMcpCap: (cap, policy) => set((s) => ({ mcp: { ...s.mcp, caps: { ...s.mcp.caps, [cap]: policy } } })),
       setMcpLevels: (ids, level) =>
         set((s) => {
@@ -146,6 +159,7 @@ export const useSettingsStore = create<SettingsState>()(
         consoleEngine: s.consoleEngine,
         psql: s.psql,
         mcp: s.mcp,
+        mcpAlerts: s.mcpAlerts,
       }),
       // Settings and capabilities added later get their defaults.
       merge: (persisted, current) => {
@@ -154,6 +168,7 @@ export const useSettingsStore = create<SettingsState>()(
           ...current,
           ...p,
           psql: { ...current.psql, ...p.psql },
+          mcpAlerts: { ...current.mcpAlerts, ...p.mcpAlerts },
           mcp: { ...current.mcp, ...p.mcp, caps: { ...DEFAULT_MCP_CAPS, ...p.mcp?.caps } },
         };
       },
