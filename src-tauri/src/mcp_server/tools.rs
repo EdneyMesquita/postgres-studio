@@ -443,6 +443,8 @@ struct Call<'a> {
     started: Instant,
     /// Followed by get_task when the call outlasts `inline_wait`.
     task: Arc<Task>,
+    /// A read that lost its connection and ran again.
+    retried: bool,
 }
 
 impl Call<'_> {
@@ -489,7 +491,43 @@ impl Call<'_> {
         self.finish("warn", label.to_string(), String::new(), text.to_string())
     }
 
+    /// A lost connection, told as one: what to check, whether the call
+    /// was retried, and that a change may or may not have been applied.
+    /// The connection is closed, so the next call connects afresh (and
+    /// opens a new SSH tunnel).
+    fn network_error(&self, error: AppError) -> AppError {
+        let Some(profile) = &self.target.profile else {
+            return error;
+        };
+        if !lost_connection(&error) {
+            return error;
+        }
+        let inner = self.inner.clone();
+        let id = profile.id.clone();
+        tokio::spawn(async move { inner.pool.close(&id, "the connection was lost").await });
+        let original = logging::scrub_credentials(&error.to_string());
+        let mut text = format!(
+            "Lost the connection to \"{}\" ({original}). Check the VPN or the network{} and try again.",
+            profile.name,
+            if profile.ssh_tunnel.is_some() {
+                ", and the SSH server"
+            } else {
+                ""
+            },
+        );
+        if self.retried {
+            text.push_str(" The call was retried once after reconnecting, and failed again.");
+        } else if self.task.changes_data && self.task.phase() == Phase::Running {
+            text.push_str(
+                " It changes data, so it wasn't retried: check whether it was applied before \
+                 running it again.",
+            );
+        }
+        AppError::Network(text)
+    }
+
     fn fail(&self, error: AppError) -> ToolOutput {
+        let error = self.network_error(error);
         self.log(&format!(
             "failed: {}",
             logging::describe(&error, Detail::NoUserData)
@@ -534,6 +572,7 @@ pub(crate) async fn call(
             target: Target::default(),
             started: Instant::now(),
             task: followed,
+            retried: false,
         };
         run_call(&mut call, &args).await
     };
@@ -656,9 +695,33 @@ async fn run_call(call: &mut Call<'_>, args: &Value) -> ToolOutput {
         Tool::RunScript => script_timeout(args) + Duration::from_secs(30),
         _ => OP_TIMEOUT,
     };
-    let result = tokio::time::timeout(timeout, execute(call, args, session.as_deref(), &plan))
+    let mut result = tokio::time::timeout(timeout, execute(call, args, session.as_deref(), &plan))
         .await
         .unwrap_or_else(|_| Err(invalid("The operation timed out.")));
+    // A read that lost its connection runs once more on a fresh one.
+    let lost = matches!(&result, Err(e) if lost_connection(e));
+    if lost && tool.uses_server() && !tool.changes_data() {
+        let profile = call.target.profile.clone().expect("checked above");
+        call.inner
+            .pool
+            .close(&profile.id, "the connection was lost")
+            .await;
+        call.retried = true;
+        log::info!("MCP: {} lost its connection; retrying once", tool.name());
+        match call
+            .inner
+            .pool
+            .session(call.inner.host.as_ref(), &profile)
+            .await
+        {
+            Ok(fresh) => {
+                result = tokio::time::timeout(timeout, execute(call, args, Some(&fresh), &plan))
+                    .await
+                    .unwrap_or_else(|_| Err(invalid("The operation timed out.")));
+            }
+            Err(e) => result = Err(e),
+        }
+    }
     match result {
         Ok(done) => {
             call.log(label);
@@ -666,6 +729,43 @@ async fn run_call(call: &mut Call<'_>, args: &Value) -> ToolOutput {
         }
         Err(e) => call.fail(e),
     }
+}
+
+/// Whether an error says the connection to the server was lost or
+/// couldn't be made: a reset, a refused or timed-out connect, a dead SSH
+/// tunnel, the server shutting down. Statement errors that reach here as
+/// text are read by how the driver words them, never by their middle (a
+/// script's output may hold any text).
+pub(crate) fn lost_connection(error: &AppError) -> bool {
+    match error {
+        AppError::Io(_) | AppError::Ssh(_) | AppError::Network(_) => true,
+        AppError::Database(db) => match db.code.as_deref() {
+            Some(code) => connection_sqlstate(code),
+            None => says_network(&db.message),
+        },
+        AppError::InvalidInput(text) => says_network(text),
+        _ => false,
+    }
+}
+
+/// SQLSTATE class 08 (connection exception), and the server going away.
+fn connection_sqlstate(code: &str) -> bool {
+    code.starts_with("08") || matches!(code, "57P01" | "57P02" | "57P03")
+}
+
+fn says_network(text: &str) -> bool {
+    const SIGNS: &[&str] = &[
+        "error communicating with the server",
+        "error connecting to server",
+        "connection closed",
+        "error performing tls handshake",
+        "terminating connection due to administrator command",
+        "the database system is shutting down",
+        "the database system is starting up",
+        "ssh tunnel error",
+    ];
+    let text = text.trim_start().to_ascii_lowercase();
+    SIGNS.iter().any(|sign| text.starts_with(sign))
 }
 
 fn invalid(message: impl Into<String>) -> AppError {
@@ -1270,6 +1370,19 @@ async fn run_script(
         if failed { ", stopped at an error" } else { "" }
     );
     drop(client);
+    // A statement that lost the connection: told as such, with what had
+    // finished before it.
+    let lost = ran
+        .results
+        .iter()
+        .filter_map(|r| r.error.as_ref())
+        .any(|e| match e.code.as_deref() {
+            Some(code) => connection_sqlstate(code),
+            None => says_network(&e.message),
+        });
+    if lost {
+        return Err(AppError::Network(text.trim_end().to_string()));
+    }
     if failed {
         return Err(invalid(text.trim_end().to_string()));
     }
@@ -2020,6 +2133,7 @@ pub(crate) mod tests {
             },
             started: Instant::now(),
             task: Task::new("s1", "query", false),
+            retried: false,
         };
         let args = json!({ "sql": "SELECT pg_terminate_backend(42)" });
         let error = plan(&mut call, &args, None)
@@ -2139,6 +2253,77 @@ pub(crate) mod tests {
         assert!(body.starts_with(
             "-- Saved by Test client through Postgres Studio's MCP server\n-- Database: shop\n"
         ));
+    }
+
+    #[test]
+    fn lost_connections_are_told_from_other_errors() {
+        let reset = std::io::Error::from(std::io::ErrorKind::ConnectionReset);
+        assert!(lost_connection(&AppError::Io(reset)));
+        assert!(lost_connection(&AppError::InvalidInput(
+            "error communicating with the server: Connection reset by peer (os error 104)".into()
+        )));
+        assert!(lost_connection(&AppError::Database(Box::new(DbError {
+            message: "terminating connection due to administrator command".into(),
+            code: Some("57P01".into()),
+            detail: None,
+            hint: None,
+            position: None,
+            severity: Some("FATAL".into()),
+        }))));
+        // A statement's own error, even one that sounds like it.
+        assert!(!lost_connection(&AppError::Database(Box::new(DbError {
+            message: "connection closed by the API".into(),
+            code: Some("P0001".into()),
+            detail: None,
+            hint: None,
+            position: None,
+            severity: Some("ERROR".into()),
+        }))));
+        // A script's output that holds such text somewhere.
+        assert!(!lost_connection(&AppError::InvalidInput(
+            "1. SELECT: 1 row\n{\"note\":\"connection closed\"}\n2. INSERT failed: duplicate key"
+                .into()
+        )));
+        assert!(!lost_connection(&AppError::NotFound(
+            "no such connection".into()
+        )));
+    }
+
+    /// A server that can't be reached is told as a lost connection, with
+    /// what to check; a read is retried once.
+    #[tokio::test]
+    async fn unreachable_servers_say_to_check_the_network() {
+        let (host, inner) = inner(Duration::from_secs(1));
+        host.state
+            .connection_store
+            .upsert(profile(
+                "dead",
+                "Dead",
+                "postgres://127.0.0.1:1/shop?connect_timeout=1",
+            ))
+            .unwrap();
+        set_policy(
+            &inner,
+            config(
+                &[("read", Policy::Allow), ("write", Policy::Allow)],
+                &[("dead", Level::Write)],
+            ),
+        );
+        let on = |sql: &str| json!({ "connection_id": "dead", "database": "shop", "sql": sql });
+        let out = run(&inner, "query", on("SELECT 1")).await;
+        assert!(out.is_error);
+        assert!(
+            out.text.starts_with("Lost the connection to \"Dead\""),
+            "{}",
+            out.text
+        );
+        assert!(
+            out.text.contains("Check the VPN or the network"),
+            "{}",
+            out.text
+        );
+        let out = run(&inner, "execute", on("DELETE FROM t")).await;
+        assert!(out.text.starts_with("Lost the connection"), "{}", out.text);
     }
 
     /// A change on a production connection is asked about even when
@@ -2408,6 +2593,33 @@ mod live_tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         panic!("no request event");
+    }
+
+    /// A read whose connection the server dropped still answers: it runs
+    /// again on a fresh connection.
+    #[tokio::test]
+    #[ignore = "needs POSTGRES_STUDIO_TEST_URI"]
+    async fn a_read_survives_a_dropped_connection() {
+        let (_host, inner, schema) = setup(Policy::Allow).await;
+        let pid = scratch(&inner, "SELECT pg_backend_pid()").await.remove(0);
+        let uri = std::env::var("POSTGRES_STUDIO_TEST_URI").unwrap();
+        let (killer, conn) = tokio_postgres::connect(&uri, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(conn);
+        killer
+            .simple_query(&format!("SELECT pg_terminate_backend({pid})"))
+            .await
+            .unwrap();
+        let out = run(
+            &inner,
+            "query",
+            on(json!({ "sql": format!("SELECT count(*) AS n FROM {schema}.orders") })),
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("{\"n\":\"10\"}"), "{}", out.text);
+        drop_scratch(&inner, &schema).await;
     }
 
     /// A script that outlasts inline_wait goes on in the background, with
