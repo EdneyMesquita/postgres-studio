@@ -33,7 +33,7 @@ Used for long stretches next to an IDE and a terminal, often on a laptop screen.
 - Explorer: connection > database > schema > Tables / Views / Materialized views / Functions / Sequences / Types; a Ctrl+K quick open for tables, saved scripts and actions.
 - Table tabs with three views in the same tab: Data, Structure and SQL (a console scoped to the table, prefilled with a query on it).
 - Data: WHERE / ORDER BY / LIMIT / OFFSET; typed grid with primary and foreign key marks; a row inspector with References and Referenced by; edits held as pending changes until Commit or Rollback, allowed only on tables with a primary or unique key.
-- Console tabs: a SQL editor bound to one database; runs the statement at the caret or the selection; one result tab per statement plus Messages; auto-commit or manual transactions; cancel.
+- Console tabs: a SQL editor bound to one database; runs the statement at the caret or the selection; one result tab per statement plus Messages; auto-commit or manual transactions; cancel; a target pill that moves a console to any database of any connected server.
 - Explain: `EXPLAIN (ANALYZE, BUFFERS)` as a tree.
 - Tab groups and a split editor of up to four panes.
 - Assistant (opt-in): drives the Claude Code or Codex CLI already installed on the machine, through read-only tools served over a local MCP server, on a session with `default_transaction_read_only`.

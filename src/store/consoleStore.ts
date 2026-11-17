@@ -258,6 +258,18 @@ export const useConsoleStore = create<ConsoleState>((set, get) => {
 // closes them all.
 useSessionsStore.subscribe((state, prev) => {
   if (state.tabs === prev.tabs) return;
+  // A console moved to another server left its transaction behind, rolled
+  // back; a pooler connection has no manual mode, so there it auto-commits.
+  const was = new Map(prev.tabs.map((t) => [t.id, t.connection.id]));
+  const moved = state.tabs.filter((t) => was.has(t.id) && was.get(t.id) !== t.connection.id && useConsoleStore.getState().consoles[t.id]);
+  if (moved.length > 0) {
+    const consoles = { ...useConsoleStore.getState().consoles };
+    for (const t of moved) {
+      const pooler = useConnectionsStore.getState().sessions[t.connection.id]?.poolerMode ?? false;
+      consoles[t.id] = { ...consoles[t.id], tx: "idle", ...(pooler ? { txMode: "auto" as const } : {}) };
+    }
+    useConsoleStore.setState({ consoles });
+  }
   const open = new Set(state.tabs.map((t) => t.id));
   const { consoles } = useConsoleStore.getState();
   const stale = Object.keys(consoles).filter((k) => !open.has(k));
