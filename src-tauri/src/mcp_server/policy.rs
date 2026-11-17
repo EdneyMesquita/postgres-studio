@@ -131,6 +131,9 @@ pub(crate) struct Request {
     pub title: String,
     pub code: String,
     pub dry_run: Option<String>,
+    /// On a production connection: the user is asked whatever the
+    /// settings say, and "always" isn't offered or kept.
+    pub production: bool,
 }
 
 #[derive(Serialize)]
@@ -147,6 +150,7 @@ struct RequestEvent<'a> {
     title: &'a str,
     code: &'a str,
     dry_run: Option<&'a str>,
+    production: bool,
     at: u64,
 }
 
@@ -193,6 +197,7 @@ pub(crate) async fn ask(inner: &Inner, client: &ClientSession, request: &Request
             title: &request.title,
             code: &request.code,
             dry_run: request.dry_run.as_deref(),
+            production: request.production,
             at: now_ms(),
         },
     );
@@ -215,6 +220,8 @@ pub(crate) async fn ask(inner: &Inner, client: &ClientSession, request: &Request
     };
     match tokio::time::timeout(inner.ask_timeout, rx).await {
         Ok(Ok(RequestChoice::Once)) => Answer::Once,
+        // Production is asked about every time.
+        Ok(Ok(RequestChoice::Always)) if request.production => Answer::Once,
         Ok(Ok(RequestChoice::Always)) => {
             let key = request
                 .connection_id
@@ -346,6 +353,7 @@ pub(crate) mod tests {
                 .collect(),
             always: HashMap::new(),
             alerts: Default::default(),
+            confirm_production: true,
         }
     }
 
@@ -424,6 +432,7 @@ pub(crate) mod tests {
             title: "UPDATE on public.customers".into(),
             code: "UPDATE customers SET marketing_opt_in = true".into(),
             dry_run: Some("UPDATE 12 · rolled back".into()),
+            production: false,
         }
     }
 

@@ -161,6 +161,7 @@ async fn materialize_profile(
         id,
         name: input.name,
         color: input.color,
+        environment: input.environment,
         source,
         database: input.database,
         username,
@@ -1288,6 +1289,7 @@ mod tests {
             id,
             name: name.to_string(),
             color: None,
+            environment: None,
             source: ConnectionSource::Uri {
                 uri: "postgres://127.0.0.1:1/shop?connect_timeout=1".to_string(),
             },

@@ -1106,6 +1106,7 @@ mod tests {
             id: "live-timescale".into(),
             name: "live-timescale".into(),
             color: None,
+            environment: None,
             source: ConnectionSource::Uri { uri },
             database: None,
             username: None,

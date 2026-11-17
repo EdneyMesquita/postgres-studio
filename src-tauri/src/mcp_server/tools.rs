@@ -31,7 +31,7 @@ use crate::assistant::{
 use crate::connection::extract_uri_credentials;
 use crate::error::{AppError, AppResult};
 use crate::logging::{self, Detail};
-use crate::models::{ConnectionProfile, ConnectionSource, DEFAULT_PORT};
+use crate::models::{ConnectionProfile, ConnectionSource, Environment, DEFAULT_PORT};
 use crate::pg::{catalog, run, split, DbError, PgClient, PgSession};
 
 /// Server-side limit on reads, writes and dry runs.
@@ -237,11 +237,12 @@ fn all_definitions() -> Vec<Value> {
         "port": { "type": "integer", "description": "With host; 5432 when left out." },
         "default_database": { "type": "string", "description": "With host: the database to connect to first." },
         "username": { "type": "string" },
+        "environment": { "type": "string", "enum": ["development", "testing", "staging", "production", "none"], "description": "What the connection is for. On production connections, the user is asked before every change. Only the user can take a connection out of production." },
     });
     vec![
         json!({
             "name": "list_connections",
-            "description": "Lists the saved connections you may use: id, name, folder, host and default database, and whether you may read or also write. Never passwords or full connection strings.",
+            "description": "Lists the saved connections you may use: id, name, folder, environment (development, testing, staging, production, or null when not set), host and default database, and whether you may read or also write. On production connections the user is asked before every change. Never passwords or full connection strings.",
             "inputSchema": { "type": "object", "properties": {} },
             "annotations": read,
         }),
@@ -315,17 +316,19 @@ fn all_definitions() -> Vec<Value> {
                 "name": connection_fields["name"], "uri": connection_fields["uri"], "host": connection_fields["host"],
                 "port": connection_fields["port"], "default_database": connection_fields["default_database"],
                 "username": connection_fields["username"],
+                "environment": connection_fields["environment"],
                 "folder": { "type": "string", "description": "A folder of the user's sidebar, by name." },
             }, "required": ["name"] },
             "annotations": edit,
         }),
         json!({
             "name": "update_connection",
-            "description": "Renames a saved connection or changes where it connects. Passwords can't be set here.",
+            "description": "Renames a saved connection, changes where it connects, or marks what it is for (its environment). Passwords can't be set here.",
             "inputSchema": { "type": "object", "properties": {
                 "connection_id": connection_id, "name": connection_fields["name"], "uri": connection_fields["uri"],
                 "host": connection_fields["host"], "port": connection_fields["port"],
                 "default_database": connection_fields["default_database"], "username": connection_fields["username"],
+                "environment": connection_fields["environment"],
             }, "required": ["connection_id"] },
             "annotations": edit,
         }),
@@ -590,6 +593,18 @@ async fn run_call(call: &mut Call<'_>, args: &Value) -> ToolOutput {
         }
     }
 
+    // On production, every change is asked about.
+    let production = call
+        .target
+        .profile
+        .as_ref()
+        .is_some_and(|p| p.environment == Some(Environment::Production));
+    let guarded = production && config.confirm_production && call.task.changes_data;
+    let decision = match decision {
+        Decision::Allow | Decision::AllowAlways if guarded => Decision::Ask,
+        other => other,
+    };
+
     let session = if tool.uses_server() {
         let profile = call.target.profile.as_ref().expect("checked above");
         match call
@@ -624,6 +639,7 @@ async fn run_call(call: &mut Call<'_>, args: &Value) -> ToolOutput {
                 title: plan.title.clone(),
                 code: truncate(plan.code.clone(), MAX_CODE),
                 dry_run: plan.dry_run.clone(),
+                production: guarded,
             };
             match policy::ask(call.inner, call.client, &request).await {
                 Answer::Once => "Approved by you",
@@ -812,6 +828,7 @@ async fn plan(call: &mut Call<'_>, args: &Value, session: Option<&PgSession>) ->
         Tool::UpdateConnection => {
             let change = connection_args(args, false)?;
             let profile = call.target.profile.as_ref().expect("checked before");
+            check_environment_change(profile.environment, change.environment)?;
             Ok(Plan {
                 title: format!("Change the connection \"{}\"", profile.name),
                 code: change.describe(),
@@ -1281,6 +1298,7 @@ fn list_connections(inner: &Inner) -> Done {
                 "id": profile.id,
                 "name": profile.name,
                 "folder": folders.get(&profile.id),
+                "environment": profile.environment.map(Environment::id),
                 "host": logging::host_summary(&profile),
                 "default_database": profile.database,
                 "access": if level == Level::Write { "read & write" } else { "read" },
@@ -1317,6 +1335,8 @@ struct ConnectionArgs {
     /// A password was in the uri; it was dropped.
     had_password: bool,
     folder: Option<String>,
+    /// Absent (`None`), cleared (`Some(None)`) or set.
+    environment: Option<Option<Environment>>,
 }
 
 impl ConnectionArgs {
@@ -1342,6 +1362,12 @@ impl ConnectionArgs {
         if let Some(folder) = &self.folder {
             lines.push(format!("folder: {folder}"));
         }
+        if let Some(environment) = self.environment {
+            lines.push(format!(
+                "environment: {}",
+                environment.map_or("none", Environment::id)
+            ));
+        }
         lines.join("\n")
     }
 }
@@ -1358,6 +1384,7 @@ fn connection_args(args: &Value, create: bool) -> AppResult<ConnectionArgs> {
         username: str_arg(args, "username"),
         database: str_arg(args, "default_database"),
         folder: str_arg(args, "folder"),
+        environment: environment_arg(args)?,
         ..ConnectionArgs::default()
     };
     if let Some(uri) = str_arg(args, "uri") {
@@ -1395,12 +1422,47 @@ fn connection_args(args: &Value, create: bool) -> AppResult<ConnectionArgs> {
         && out.source.is_none()
         && out.username.is_none()
         && out.database.is_none()
+        && out.environment.is_none()
     {
         return Err(invalid(
-            "Pass what changes: name, uri, host, port, default_database or username.",
+            "Pass what changes: name, uri, host, port, default_database, username or environment.",
         ));
     }
     Ok(out)
+}
+
+/// `environment`: absent (`None`), cleared (`Some(None)`) or set.
+fn environment_arg(args: &Value) -> AppResult<Option<Option<Environment>>> {
+    match args.get("environment") {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(Value::String(s)) if s.trim().is_empty() || s.trim().eq_ignore_ascii_case("none") => {
+            Ok(Some(None))
+        }
+        Some(Value::String(s)) => Environment::parse(s).map(|e| Some(Some(e))).ok_or_else(|| {
+            invalid("environment must be development, testing, staging, production or none.")
+        }),
+        Some(_) => Err(invalid("environment must be a string.")),
+    }
+}
+
+/// A client may mark a connection production, never unmark it: only the
+/// user can, so an agent can't lift the check it is under.
+fn check_environment_change(
+    current: Option<Environment>,
+    change: Option<Option<Environment>>,
+) -> AppResult<()> {
+    match change {
+        Some(new)
+            if current == Some(Environment::Production) && new != Some(Environment::Production) =>
+        {
+            Err(invalid(
+                "This connection is marked production, and only the user can change that, in \
+                 Postgres Studio.",
+            ))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// The folder named `name` (its plain name or its "Parent / Child" path),
@@ -1455,6 +1517,7 @@ fn create_connection(call: &Call<'_>, args: &Value) -> AppResult<Done> {
         id: String::new(),
         name: new.name.clone().unwrap_or_default(),
         color: None,
+        environment: new.environment.flatten(),
         source: new.source.clone().expect("checked by connection_args"),
         database: new.database.clone(),
         username: new.username.clone(),
@@ -1524,6 +1587,10 @@ async fn update_connection(call: &Call<'_>, args: &Value) -> AppResult<Done> {
     let mut notes = Vec::new();
     if let Some(name) = &change.name {
         profile.name = name.clone();
+    }
+    check_environment_change(profile.environment, change.environment)?;
+    if let Some(environment) = change.environment {
+        profile.environment = environment;
     }
     if let Some(source) = change.source {
         profile.source = source;
@@ -1713,6 +1780,7 @@ pub(crate) mod tests {
             id: id.to_string(),
             name: name.to_string(),
             color: None,
+            environment: None,
             source: ConnectionSource::Uri {
                 uri: uri.to_string(),
             },
@@ -1738,6 +1806,7 @@ pub(crate) mod tests {
                 .collect(),
             always: HashMap::new(),
             alerts: Default::default(),
+            confirm_production: true,
         }
     }
 
@@ -2072,6 +2141,92 @@ pub(crate) mod tests {
         ));
     }
 
+    /// A change on a production connection is asked about even when
+    /// allowed, "always" isn't kept, and a client can't take the
+    /// connection out of production.
+    #[tokio::test]
+    async fn production_connections_ask_before_every_change() {
+        use super::super::{RequestChoice, REQUEST_EVENT};
+        let (host, inner) = inner(Duration::from_secs(5));
+        let mut prod = profile("p1", "Billing", "postgres://db.example:5432/billing");
+        prod.environment = Some(Environment::Production);
+        host.state.connection_store.upsert(prod).unwrap();
+        set_policy(
+            &inner,
+            config(
+                &[("connEdit", Policy::Allow), ("connList", Policy::Allow)],
+                &[("p1", Level::Write)],
+            ),
+        );
+        let out = run(&inner, "list_connections", json!({})).await;
+        assert!(
+            out.text.contains("\"environment\":\"production\""),
+            "{}",
+            out.text
+        );
+
+        let waiting = {
+            let inner = inner.clone();
+            tokio::spawn(async move {
+                run(
+                    &inner,
+                    "update_connection",
+                    json!({ "connection_id": "p1", "name": "Billing EU" }),
+                )
+                .await
+            })
+        };
+        let request = loop {
+            if let Some(event) = host.events_named(REQUEST_EVENT).pop() {
+                break event;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        };
+        assert_eq!(request["production"], true);
+        policy::answer(
+            &inner,
+            request["requestId"].as_str().unwrap(),
+            RequestChoice::Always,
+        )
+        .unwrap();
+        let out = waiting.await.unwrap();
+        assert!(!out.is_error, "{}", out.text);
+        // "Always" counted as once.
+        assert!(inner.config().always.is_empty());
+        assert_eq!(
+            host.state.connection_store.get("p1").unwrap().name,
+            "Billing EU"
+        );
+
+        // Taking it out of production is refused before the user is asked.
+        let before = host.events_named(REQUEST_EVENT).len();
+        let out = run(
+            &inner,
+            "update_connection",
+            json!({ "connection_id": "p1", "environment": "staging" }),
+        )
+        .await;
+        assert!(
+            out.is_error && out.text.contains("only the user can change that"),
+            "{}",
+            out.text
+        );
+        assert_eq!(host.events_named(REQUEST_EVENT).len(), before);
+
+        // Without the setting, Allow goes through.
+        let mut config = inner.config();
+        config.confirm_production = false;
+        set_policy(&inner, config);
+        let out = run(
+            &inner,
+            "update_connection",
+            json!({ "connection_id": "p1", "name": "Billing" }),
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.text);
+        assert_eq!(host.events_named(REQUEST_EVENT).len(), before);
+    }
+
     /// A request nobody answers within inline_wait comes back as a task
     /// that says it waits for the user; the answer arrives via get_task.
     #[tokio::test]
@@ -2197,6 +2352,7 @@ mod live_tests {
                 connections: HashMap::from([("live".to_string(), Level::Write)]),
                 always: HashMap::new(),
                 alerts: Default::default(),
+                confirm_production: true,
             },
         );
         let schema = format!("mcp_live_{}", uuid::Uuid::new_v4().simple());

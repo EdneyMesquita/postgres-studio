@@ -522,8 +522,9 @@ export function McpSettings() {
 
         <SectionTitle>What clients can do</SectionTitle>
         <Note>
-          Ask shows the request in Postgres Studio and waits up to two minutes for you, then refuses. Write and schema
-          changes only reach connections set to Read &amp; write below.
+          Ask shows the request in Postgres Studio and waits up to five minutes for you, then refuses; the client
+          follows it in the background meanwhile. Write and schema changes only reach connections set to Read &amp;
+          write below.
         </Note>
         {CAP_GROUPS.map((group) => (
           <RowGroup key={group.title} title={group.title}>
@@ -544,6 +545,13 @@ export function McpSettings() {
             })}
           </RowGroup>
         ))}
+
+        <SwitchField
+          label="Always ask before changes on production"
+          description="On connections whose environment is Production, every write, schema change and script waits for you, even where it's set to Allow; Always allow isn't offered there."
+          checked={mcp.confirmProduction ?? true}
+          onCheckedChange={(confirmProduction) => setMcp({ confirmProduction })}
+        />
 
         <SectionTitle>When a request waits for you</SectionTitle>
         <RequestAlerts />

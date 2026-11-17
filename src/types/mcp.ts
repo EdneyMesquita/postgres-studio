@@ -25,6 +25,8 @@ export interface McpConfig {
   always: Record<string, McpCapability[]>;
   /** How the app calls the user back when a request waits. */
   alerts: { sound: boolean; focus: boolean };
+  /** Ask before every change on production connections, whatever the grants say. */
+  confirmProduction: boolean;
 }
 
 export interface McpClient {
@@ -72,6 +74,8 @@ export interface McpRequest {
   code: string;
   /** e.g. "UPDATE 12 · rolled back"; null when there is none. */
   dryRun: string | null;
+  /** A change on a production connection: always asked, never "always". */
+  production?: boolean;
   /** Milliseconds since the Unix epoch. */
   at: number;
 }
