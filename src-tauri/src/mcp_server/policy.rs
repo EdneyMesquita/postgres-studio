@@ -131,6 +131,9 @@ pub(crate) struct Request {
     pub title: String,
     pub code: String,
     pub dry_run: Option<String>,
+    /// Every connection a call on several is about; "always" is kept for
+    /// each of them.
+    pub connection_ids: Vec<String>,
     /// On a production connection: the user is asked whatever the
     /// settings say, and "always" isn't offered or kept.
     pub production: bool,
@@ -223,11 +226,17 @@ pub(crate) async fn ask(inner: &Inner, client: &ClientSession, request: &Request
         // Production is asked about every time.
         Ok(Ok(RequestChoice::Always)) if request.production => Answer::Once,
         Ok(Ok(RequestChoice::Always)) => {
-            let key = request
-                .connection_id
-                .clone()
-                .unwrap_or_else(|| ANY_CONNECTION.to_string());
-            remember_always(inner, &key, request.capability);
+            if request.connection_ids.is_empty() {
+                let key = request
+                    .connection_id
+                    .clone()
+                    .unwrap_or_else(|| ANY_CONNECTION.to_string());
+                remember_always(inner, &key, request.capability);
+            } else {
+                for id in &request.connection_ids {
+                    remember_always(inner, id, request.capability);
+                }
+            }
             Answer::Always
         }
         Ok(Ok(RequestChoice::Deny)) => Answer::Deny,
@@ -432,6 +441,7 @@ pub(crate) mod tests {
             title: "UPDATE on public.customers".into(),
             code: "UPDATE customers SET marketing_opt_in = true".into(),
             dry_run: Some("UPDATE 12 · rolled back".into()),
+            connection_ids: Vec::new(),
             production: false,
         }
     }

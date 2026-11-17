@@ -19,6 +19,8 @@ use serde::Serialize;
 use serde_json::{json, Map, Value};
 use tokio_postgres::SimpleQueryMessage;
 
+mod many;
+
 use super::policy::{self, Answer, Cap, Decision, Request};
 use super::tasks::{self, Phase, Task};
 use super::{
@@ -109,6 +111,7 @@ pub(crate) enum Tool {
     Execute,
     RunDdl,
     RunScript,
+    RunScriptOnConnections,
     CreateConnection,
     UpdateConnection,
     DeleteConnection,
@@ -127,7 +130,7 @@ enum Scope {
 }
 
 impl Tool {
-    const ALL: [Tool; 16] = [
+    const ALL: [Tool; 17] = [
         Tool::ListConnections,
         Tool::ListDatabases,
         Tool::ListSchemas,
@@ -138,6 +141,7 @@ impl Tool {
         Tool::Execute,
         Tool::RunDdl,
         Tool::RunScript,
+        Tool::RunScriptOnConnections,
         Tool::CreateConnection,
         Tool::UpdateConnection,
         Tool::DeleteConnection,
@@ -162,6 +166,7 @@ impl Tool {
             Tool::Execute => "execute",
             Tool::RunDdl => "run_ddl",
             Tool::RunScript => "run_script",
+            Tool::RunScriptOnConnections => "run_script_on_connections",
             Tool::CreateConnection => "create_connection",
             Tool::UpdateConnection => "update_connection",
             Tool::DeleteConnection => "delete_connection",
@@ -183,7 +188,7 @@ impl Tool {
             Tool::Query | Tool::Explain => Cap::Read,
             Tool::Execute => Cap::Write,
             Tool::RunDdl => Cap::Ddl,
-            Tool::RunScript => Cap::Script,
+            Tool::RunScript | Tool::RunScriptOnConnections => Cap::Script,
             Tool::CreateConnection | Tool::UpdateConnection => Cap::ConnEdit,
             Tool::DeleteConnection => Cap::ConnDelete,
             Tool::SaveScript => Cap::SaveScript,
@@ -196,7 +201,9 @@ impl Tool {
             | Tool::CreateConnection
             | Tool::SaveScript
             | Tool::GetTask
-            | Tool::CancelTask => Scope::Nothing,
+            | Tool::CancelTask
+            // its connections are checked one by one, in `many`
+            | Tool::RunScriptOnConnections => Scope::Nothing,
             Tool::ListDatabases | Tool::UpdateConnection | Tool::DeleteConnection => {
                 Scope::Connection
             }
@@ -215,6 +222,8 @@ impl Tool {
                 | Tool::SaveScript
                 | Tool::GetTask
                 | Tool::CancelTask
+                // talks to several, in `many`
+                | Tool::RunScriptOnConnections
         )
     }
 
@@ -222,7 +231,9 @@ impl Tool {
     /// `read`.
     fn cap_for(self, args: &Value) -> Cap {
         match self {
-            Tool::RunScript if matches!(ScriptMode::of(args), Ok(ScriptMode::ReadOnly)) => {
+            Tool::RunScript | Tool::RunScriptOnConnections
+                if matches!(ScriptMode::of(args), Ok(ScriptMode::ReadOnly)) =>
+            {
                 Cap::Read
             }
             tool => tool.cap(),
@@ -233,7 +244,9 @@ impl Tool {
     /// would repeat the change.
     fn changes_data(self, args: &Value) -> bool {
         match self {
-            Tool::RunScript => ScriptMode::of(args).map_or(true, ScriptMode::changes_data),
+            Tool::RunScript | Tool::RunScriptOnConnections => {
+                ScriptMode::of(args).map_or(true, ScriptMode::changes_data)
+            }
             tool => !matches!(tool.cap(), Cap::Browse | Cap::Read | Cap::ConnList),
         }
     }
@@ -257,7 +270,8 @@ pub(crate) fn definitions(config: &McpConfig) -> Value {
         .filter(|(tool, _)| {
             let on = |cap| policy::cap_policy(config, cap) != Policy::Off;
             // A read-only script needs only `read`.
-            on(tool.cap()) || (*tool == Tool::RunScript && on(Cap::Read))
+            let script = matches!(tool, Tool::RunScript | Tool::RunScriptOnConnections);
+            on(tool.cap()) || (script && on(Cap::Read))
         })
         .map(|(_, def)| def)
         .collect();
@@ -366,6 +380,20 @@ fn all_definitions() -> Vec<Value> {
                 "read_only": { "type": "boolean", "default": false, "description": "Only reads; needs only read access." },
                 "dry_run": { "type": "boolean", "default": false, "description": "Run it in a transaction that is rolled back, to see what it would do." },
             }), &["sql"]),
+            "annotations": write,
+        }),
+        json!({
+            "name": "run_script_on_connections",
+            "description": "Runs the same script on several connections, one after the other, and returns each one's result - e.g. the same fix on every tenant's or region's database. Same as run_script (sql, timeout_ms per connection, read_only, dry_run), with targets instead of connection_id and database. When the user has to approve it, they are asked once for all of them. A failure on one doesn't stop the others unless stop_on_error is true.",
+            "inputSchema": { "type": "object", "properties": {
+                "targets": { "type": "array", "minItems": 1, "maxItems": many::MAX_TARGETS, "description": "Where to run it: a connection_id from list_connections and a database on it, for each.",
+                    "items": { "type": "object", "properties": { "connection_id": connection_id.clone(), "database": database.clone() }, "required": ["connection_id", "database"] } },
+                "sql": { "type": "string" },
+                "timeout_ms": { "type": "integer", "minimum": 1, "maximum": MAX_SCRIPT_MS, "default": DEFAULT_SCRIPT_MS },
+                "read_only": { "type": "boolean", "default": false, "description": "Only reads; needs only read access." },
+                "dry_run": { "type": "boolean", "default": false, "description": "Run it in a transaction that is rolled back on each, to see what it would do." },
+                "stop_on_error": { "type": "boolean", "default": false, "description": "Don't run on the targets after the first failure." },
+            }, "required": ["targets", "sql"] },
             "annotations": write,
         }),
         json!({
@@ -648,6 +676,9 @@ fn whole_arg(args: &Value, key: &str) -> Option<i64> {
 
 async fn run_call(call: &mut Call<'_>, args: &Value) -> ToolOutput {
     let tool = call.tool;
+    if tool == Tool::RunScriptOnConnections {
+        return many::run(call, args).await;
+    }
     let scope = tool.scope();
     if scope >= Scope::Connection {
         match str_arg(args, "connection_id") {
@@ -739,6 +770,7 @@ async fn run_call(call: &mut Call<'_>, args: &Value) -> ToolOutput {
                 title: plan.title.clone(),
                 code: truncate(plan.code.clone(), MAX_CODE),
                 dry_run: plan.dry_run.clone(),
+                connection_ids: Vec::new(),
                 production: guarded,
             };
             match policy::ask(call.inner, call.client, &request).await {
@@ -1234,6 +1266,7 @@ async fn execute(
         Tool::DeleteConnection => delete_connection(call).await,
         Tool::SaveScript => save_script(call, args),
         Tool::GetTask | Tool::CancelTask => unreachable!("answered before a call starts"),
+        Tool::RunScriptOnConnections => unreachable!("run by many::run"),
     }
 }
 
@@ -2898,6 +2931,77 @@ mod live_tests {
         );
         let out = run(&inner, "run_script", on(json!({ "sql": "SELECT 1" }))).await;
         assert!(out.is_error, "{}", out.text);
+        drop_scratch(&inner, &schema).await;
+    }
+
+    /// One script on two targets: one approval, a result for each,
+    /// "always" kept for both connections.
+    #[tokio::test]
+    #[ignore = "needs POSTGRES_STUDIO_TEST_URI"]
+    async fn one_script_on_several_connections() {
+        let (host, inner, schema) = setup(Policy::Ask).await;
+        let uri = std::env::var("POSTGRES_STUDIO_TEST_URI").unwrap();
+        host.state
+            .connection_store
+            .upsert(profile("live2", "Live 2", &uri))
+            .unwrap();
+        inner
+            .config
+            .lock()
+            .unwrap()
+            .connections
+            .insert("live2".into(), Level::Write);
+        let args = json!({
+            "targets": [
+                { "connection_id": "live", "database": DB },
+                { "connection_id": "live2", "database": "postgres" },
+            ],
+            "sql": "SELECT current_database() AS db",
+        });
+        let waiting = {
+            let inner = inner.clone();
+            let args = args.clone();
+            tokio::spawn(async move { run(&inner, "run_script_on_connections", args).await })
+        };
+        let request = wait_for_request(&host).await;
+        assert_eq!(request["connectionName"], "Live (shop), Live 2 (postgres)");
+        assert_eq!(request["title"], "Run a script (2 targets)");
+        policy::answer(
+            &inner,
+            request["requestId"].as_str().unwrap(),
+            RequestChoice::Always,
+        )
+        .unwrap();
+        let out = waiting.await.unwrap();
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            out.text.starts_with("Ran the script on 2 of 2 targets."),
+            "{}",
+            out.text
+        );
+        assert!(out.text.contains("{\"db\":\"shop\"}"), "{}", out.text);
+        assert!(out.text.contains("{\"db\":\"postgres\"}"), "{}", out.text);
+        let always = inner.config().always;
+        assert!(always["live"].contains(&"script".to_string()));
+        assert!(always["live2"].contains(&"script".to_string()));
+
+        // Allowed now without asking; a read-only connection refuses a
+        // normal run, and says read_only would do.
+        let out = run(&inner, "run_script_on_connections", args.clone()).await;
+        assert!(!out.is_error, "{}", out.text);
+        assert_eq!(host.events_named(REQUEST_EVENT).len(), 1);
+        inner
+            .config
+            .lock()
+            .unwrap()
+            .connections
+            .insert("live2".into(), Level::Read);
+        let out = run(&inner, "run_script_on_connections", args).await;
+        assert!(
+            out.is_error && out.text.contains("On Live 2") && out.text.contains("read_only: true"),
+            "{}",
+            out.text
+        );
         drop_scratch(&inner, &schema).await;
     }
 
