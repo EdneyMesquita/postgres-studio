@@ -196,7 +196,7 @@ pub(super) async fn run(call: &mut Call<'_>, args: &Value) -> ToolOutput {
     } else {
         "Allowed"
     };
-    call.task.set_phase(Phase::Running);
+    call.start_running(label);
 
     let stop_on_error = bool_arg(args, "stop_on_error");
     let timeout = script_timeout(args);

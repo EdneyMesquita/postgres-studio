@@ -378,12 +378,12 @@ fn all_definitions() -> Vec<Value> {
         json!({
             "name": "run_ddl",
             "description": "Runs one statement that changes the schema or its grants: CREATE, ALTER, DROP, TRUNCATE, COMMENT, GRANT, REVOKE, REINDEX, REFRESH MATERIALIZED VIEW, ANALYZE or VACUUM. It runs on its own, so CREATE INDEX CONCURRENTLY works.",
-            "inputSchema": on_database(json!({ "sql": { "type": "string" } }), &["sql"]),
+            "inputSchema": on_database(json!({ "sql": { "type": "string" }, "timeout_ms": { "type": "integer", "minimum": 1, "maximum": MAX_STATEMENT_MS, "default": DEFAULT_STATEMENT_MS, "description": "How long it may run before it's stopped, for a CREATE INDEX or VACUUM on a large table. A call past about 40 s goes on in the background." } }), &["sql"]),
             "annotations": write,
         }),
         json!({
             "name": "run_script",
-            "description": "Runs several SQL statements in order, each committing on its own unless the script opens a transaction, stopping at the first error. Reports what each did, with the first rows of each result. A transaction left open is rolled back. With read_only, it may hold only reads (SELECT, WITH, VALUES, TABLE, SHOW, EXPLAIN), runs in a read-only transaction and needs only read access. With dry_run, it runs in one transaction that is rolled back and reports what each statement would do (rows it would change, schema changes it would make): it still takes locks and fires triggers, may not hold BEGIN, COMMIT or ROLLBACK, and needs the same access as a real run.",
+            "description": "Runs several SQL statements in order, each committing on its own unless the script opens a transaction, stopping at the first error. Reports what each did, with the first rows of each result. A transaction left open is rolled back. With read_only, it may hold only reads (SELECT, WITH, VALUES, TABLE, SHOW, EXPLAIN), runs in a read-only transaction and needs only read access. With dry_run, it runs in one transaction that is rolled back and reports what each statement would do (rows it would change, schema changes it would make): it still takes locks, fires triggers and uses up sequence values, may not hold BEGIN, COMMIT, ROLLBACK, COPY or setval, and needs the same access as a real run.",
             "inputSchema": on_database(json!({
                 "sql": { "type": "string" },
                 "timeout_ms": { "type": "integer", "minimum": 1, "maximum": MAX_SCRIPT_MS, "default": DEFAULT_SCRIPT_MS },
@@ -560,6 +560,11 @@ struct Call<'a> {
     retried: bool,
     /// What runs, as the approval card shows it, for the history.
     code: Option<String>,
+    /// How the call was allowed, once it runs: a call stopped from outside
+    /// (cancel_task, the client going away) is recorded with it.
+    running: Option<&'static str>,
+    /// The history has had its say about this call.
+    recorded: std::sync::atomic::AtomicBool,
 }
 
 impl Call<'_> {
@@ -589,8 +594,12 @@ impl Call<'_> {
     /// script, read-only and dry runs too - in the history, when the user
     /// keeps one.
     fn record(&self, result: &str, label: &str, meta: &str, text: &str) {
+        use std::sync::atomic::Ordering;
         let script = matches!(self.tool, Tool::RunScript | Tool::RunScriptOnConnections);
-        if self.task.phase() != Phase::Running || !(self.task.changes_data || script) {
+        if self.running.is_none()
+            || !(self.task.changes_data || script)
+            || self.recorded.swap(true, Ordering::SeqCst)
+        {
             return;
         }
         if !self.inner.config().history {
@@ -622,6 +631,12 @@ impl Call<'_> {
         if let Err(e) = self.inner.history.append(entry) {
             log::warn!("MCP server: couldn't add to the history: {e}");
         }
+    }
+
+    /// The call is allowed and starts to run.
+    fn start_running(&mut self, label: &'static str) {
+        self.running = Some(label);
+        self.task.set_phase(Phase::Running);
     }
 
     fn log(&self, outcome: &str) {
@@ -692,6 +707,25 @@ impl Call<'_> {
     }
 }
 
+impl Drop for Call<'_> {
+    /// A call dropped while it ran (cancel_task, the client went away, the
+    /// server stopped) never reached `finish`: it is recorded as stopped,
+    /// with what it had reported, since it may have changed something.
+    fn drop(&mut self) {
+        let Some(label) = self.running else {
+            return;
+        };
+        let reported = self.task.printed_lines();
+        let mut text = "Stopped before it finished (cancelled, or the client went away). \
+                        What was committed before that was kept; an open transaction was rolled back."
+            .to_string();
+        if !reported.is_empty() {
+            text.push_str(&format!(" It had reported:\n{}", reported.join("\n")));
+        }
+        self.record("err", label, "stopped", &text);
+    }
+}
+
 /// Runs a `tools/call`. `None` when there's no tool by that name.
 pub(crate) async fn call(
     inner: &Arc<Inner>,
@@ -729,6 +763,8 @@ pub(crate) async fn call(
             task: followed,
             retried: false,
             code: None,
+            running: None,
+            recorded: Default::default(),
         };
         run_call(&mut call, &args).await
     };
@@ -853,7 +889,7 @@ async fn run_call(call: &mut Call<'_>, args: &Value) -> ToolOutput {
         }
     };
 
-    call.task.set_phase(Phase::Running);
+    call.start_running(label);
     let timeout = match tool {
         Tool::RunScript => script_timeout(args) + OP_MARGIN,
         _ => statement_timeout(args) + OP_MARGIN,
@@ -1129,6 +1165,11 @@ async fn plan(call: &mut Call<'_>, args: &Value, session: Option<&PgSession>) ->
                 ..empty
             })
         }
+        Tool::GetHistory => Ok(Plan {
+            title: "Read the history of changes".to_string(),
+            code: "get_history".to_string(),
+            ..empty
+        }),
         Tool::SaveScript => {
             let name = name_arg(args).ok_or_else(|| invalid("name is required."))?;
             let content = args
@@ -1507,17 +1548,32 @@ fn check_script(sql: &str, mode: ScriptMode) -> AppResult<usize> {
                     "Statement {n} is {command}: a dry run is one transaction that is rolled back, so it can't hold its own BEGIN, COMMIT or ROLLBACK."
                 )));
             }
-            ScriptMode::DryRun
-                if first == "COPY" && stmt.text.to_ascii_lowercase().contains("program") =>
-            {
+            // COPY may write a server file or run a program; a rollback
+            // undoes neither.
+            ScriptMode::DryRun if first == "COPY" => {
                 return Err(invalid(format!(
-                    "Statement {n} runs a program on the server, which a rollback can't undo."
+                    "Statement {n} is COPY, which a dry run can't hold: a rollback doesn't undo a file it writes or a program it runs."
+                )));
+            }
+            ScriptMode::DryRun if calls(&stmt.text, "setval") => {
+                return Err(invalid(format!(
+                    "Statement {n} calls setval, which a rollback doesn't undo."
                 )));
             }
             _ => {}
         }
     }
     Ok(statements.len())
+}
+
+/// Whether `sql` calls the function `name` (not a longer name ending so).
+fn calls(sql: &str, name: &str) -> bool {
+    let lower = sql.to_ascii_lowercase();
+    lower.match_indices(name).any(|(at, _)| {
+        let before = lower[..at].chars().next_back();
+        let after = lower[at + name.len()..].trim_start().chars().next();
+        !before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') && after == Some('(')
+    })
 }
 
 /// One finished statement of a script: its summary line, then the rows
@@ -2336,7 +2392,13 @@ pub(crate) mod tests {
         assert!(
             err("UPDATE t SET a = 1; COMMIT", ScriptMode::DryRun).contains("Statement 2 is COMMIT")
         );
-        assert!(err("COPY t TO PROGRAM 'rm -rf /'", ScriptMode::DryRun).contains("runs a program"));
+        assert!(err("COPY t TO PROGRAM 'rm -rf /'", ScriptMode::DryRun).contains("is COPY"));
+        assert!(err("COPY t TO '/tmp/out.csv'", ScriptMode::DryRun).contains("is COPY"));
+        assert!(err("SELECT setval('t_id_seq', 1)", ScriptMode::DryRun).contains("calls setval"));
+        assert_eq!(
+            check_script("SELECT my_setval_log()", ScriptMode::DryRun).unwrap(),
+            1
+        );
         assert_eq!(
             check_script("BEGIN; UPDATE t SET a = 1; COMMIT", ScriptMode::Normal).unwrap(),
             3
@@ -2516,6 +2578,8 @@ pub(crate) mod tests {
             task: Task::new("s1", "query", false),
             retried: false,
             code: None,
+            running: None,
+            recorded: Default::default(),
         };
         let args = json!({ "sql": "SELECT pg_terminate_backend(42)" });
         let error = plan(&mut call, &args, None)
@@ -2822,6 +2886,18 @@ pub(crate) mod tests {
         assert_eq!(host.events_named(REQUEST_EVENT).len(), before);
     }
 
+    /// get_history set to Ask shows what it is on the card.
+    #[tokio::test]
+    async fn reading_the_history_asks_with_a_title() {
+        use super::super::REQUEST_EVENT;
+        let (host, inner) = inner(Duration::from_millis(50));
+        set_policy(&inner, config(&[("read", Policy::Ask)], &[]));
+        let out = run(&inner, "get_history", json!({})).await;
+        assert!(out.is_error, "{}", out.text);
+        let request = host.events_named(REQUEST_EVENT).pop().unwrap();
+        assert_eq!(request["title"], "Read the history of changes");
+    }
+
     /// A request nobody answers within inline_wait comes back as a task
     /// that says it waits for the user; the answer arrives via get_task.
     #[tokio::test]
@@ -3070,6 +3146,67 @@ mod live_tests {
         drop_scratch(&inner, &schema).await;
     }
 
+    /// The modes hold on a connection in pooler mode too, and a write
+    /// hidden after a first read is still stopped.
+    #[tokio::test]
+    #[ignore = "needs POSTGRES_STUDIO_TEST_URI"]
+    async fn script_modes_hold_in_pooler_mode() {
+        let (host, inner, schema) = setup(Policy::Allow).await;
+        let uri = std::env::var("POSTGRES_STUDIO_TEST_URI").unwrap();
+        let mut pooled = profile("pool", "Pooled", &uri);
+        pooled.advanced.pooler_mode = true;
+        host.state.connection_store.upsert(pooled).unwrap();
+        inner
+            .config
+            .lock()
+            .unwrap()
+            .connections
+            .insert("pool".into(), Level::Write);
+        for id in ["live", "pool"] {
+            let args = |extra: Value| {
+                let mut a = json!({ "connection_id": id, "database": DB });
+                a.as_object_mut()
+                    .unwrap()
+                    .extend(extra.as_object().unwrap().clone());
+                a
+            };
+            let dry = format!(
+                "UPDATE {schema}.orders SET status = 'late' WHERE id = 1; \
+                 SELECT count(*) AS late FROM {schema}.orders WHERE status = 'late'; \
+                 DELETE FROM {schema}.orders WHERE id = 2"
+            );
+            let out = run(
+                &inner,
+                "run_script",
+                args(json!({ "sql": dry, "dry_run": true })),
+            )
+            .await;
+            assert!(!out.is_error, "{id}: {}", out.text);
+            assert!(out.text.contains("{\"late\":\"1\"}"), "{id}: {}", out.text);
+            let sneaky = format!(
+                "SELECT 1; WITH gone AS (DELETE FROM {schema}.orders RETURNING 1) SELECT count(*) FROM gone"
+            );
+            let out = run(
+                &inner,
+                "run_script",
+                args(json!({ "sql": sneaky, "read_only": true })),
+            )
+            .await;
+            assert!(
+                out.is_error && out.text.contains("read-only transaction"),
+                "{id}: {}",
+                out.text
+            );
+            let kept = scratch(
+                &inner,
+                &format!("SELECT count(*)::text || '/' || count(*) FILTER (WHERE status = 'late') FROM {schema}.orders"),
+            )
+            .await;
+            assert_eq!(kept, ["10/0"], "{id}");
+        }
+        drop_scratch(&inner, &schema).await;
+    }
+
     /// One script on two targets: one approval, a result for each,
     /// "always" kept for both connections.
     #[tokio::test]
@@ -3314,6 +3451,18 @@ mod live_tests {
         )
         .await;
         assert_eq!(still, ["0"]);
+        // Stopped mid-run, it is in the history all the same.
+        let stopped = &inner.history.list(&HistoryFilter::default()).unwrap()[0];
+        assert_eq!(stopped.tool, "run_script");
+        assert_eq!(stopped.summary, "stopped");
+        assert!(
+            stopped
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("Stopped before it finished"),
+            "{stopped:?}"
+        );
         drop_scratch(&inner, &schema).await;
     }
 

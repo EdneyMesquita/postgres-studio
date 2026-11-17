@@ -85,6 +85,11 @@ impl Task {
         self.state.lock().unwrap().printed.push(line);
     }
 
+    /// Every line reported so far.
+    pub fn printed_lines(&self) -> Vec<String> {
+        self.state.lock().unwrap().printed.clone()
+    }
+
     pub fn printed_count(&self) -> usize {
         self.state.lock().unwrap().printed.len()
     }
