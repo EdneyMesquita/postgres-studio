@@ -20,6 +20,7 @@ use serde_json::{json, Map, Value};
 use tokio_postgres::SimpleQueryMessage;
 
 use super::policy::{self, Answer, Cap, Decision, Request};
+use super::tasks::{self, Phase, Task};
 use super::{
     now_ms, ClientSession, Inner, Level, McpConfig, Policy, ACTIVITY_EVENT, CONNECTION_EVENT,
 };
@@ -48,6 +49,9 @@ const MAX_ROWS: i64 = 200;
 const SHOWN_ROWS: usize = 50;
 const DEFAULT_SCRIPT_MS: i64 = 60_000;
 const MAX_SCRIPT_MS: i64 = 600_000;
+const DEFAULT_TASK_WAIT_MS: i64 = 30_000;
+/// Under the minute many clients wait for a request.
+const MAX_TASK_WAIT_MS: i64 = 45_000;
 
 /// What `execute` takes: statements that change rows.
 const WRITE_COMMANDS: [&str; 5] = ["INSERT", "UPDATE", "DELETE", "MERGE", "WITH"];
@@ -73,6 +77,8 @@ pub(crate) enum Tool {
     UpdateConnection,
     DeleteConnection,
     SaveScript,
+    GetTask,
+    CancelTask,
 }
 
 /// What a tool works on, and so which of connection_id and database it
@@ -85,7 +91,7 @@ enum Scope {
 }
 
 impl Tool {
-    const ALL: [Tool; 14] = [
+    const ALL: [Tool; 16] = [
         Tool::ListConnections,
         Tool::ListDatabases,
         Tool::ListSchemas,
@@ -100,6 +106,8 @@ impl Tool {
         Tool::UpdateConnection,
         Tool::DeleteConnection,
         Tool::SaveScript,
+        Tool::GetTask,
+        Tool::CancelTask,
     ];
 
     fn from_name(name: &str) -> Option<Self> {
@@ -122,12 +130,16 @@ impl Tool {
             Tool::UpdateConnection => "update_connection",
             Tool::DeleteConnection => "delete_connection",
             Tool::SaveScript => "save_script",
+            Tool::GetTask => "get_task",
+            Tool::CancelTask => "cancel_task",
         }
     }
 
     /// The capability the tool needs.
     fn cap(self) -> Cap {
         match self {
+            // About calls the client already made, each checked then.
+            Tool::GetTask | Tool::CancelTask => Cap::Browse,
             Tool::ListConnections => Cap::ConnList,
             Tool::ListDatabases | Tool::ListSchemas | Tool::ListTables | Tool::DescribeTable => {
                 Cap::Browse
@@ -144,7 +156,11 @@ impl Tool {
 
     fn scope(self) -> Scope {
         match self {
-            Tool::ListConnections | Tool::CreateConnection | Tool::SaveScript => Scope::Nothing,
+            Tool::ListConnections
+            | Tool::CreateConnection
+            | Tool::SaveScript
+            | Tool::GetTask
+            | Tool::CancelTask => Scope::Nothing,
             Tool::ListDatabases | Tool::UpdateConnection | Tool::DeleteConnection => {
                 Scope::Connection
             }
@@ -161,7 +177,15 @@ impl Tool {
                 | Tool::UpdateConnection
                 | Tool::DeleteConnection
                 | Tool::SaveScript
+                | Tool::GetTask
+                | Tool::CancelTask
         )
+    }
+
+    /// Whether the call may change data or settings, so running it twice
+    /// would repeat the change.
+    fn changes_data(self) -> bool {
+        !matches!(self.cap(), Cap::Browse | Cap::Read | Cap::ConnList)
     }
 }
 
@@ -194,6 +218,7 @@ fn all_definitions() -> Vec<Value> {
     let read = json!({ "readOnlyHint": true, "destructiveHint": false, "openWorldHint": false });
     let write = json!({ "readOnlyHint": false, "destructiveHint": true, "openWorldHint": false });
     let edit = json!({ "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false });
+    let task_id = json!({ "type": "string", "description": "The task_id a call answered with when it went on in the background." });
     let on_database = |extra: Value, required: &[&str]| {
         let mut properties = Map::new();
         properties.insert("connection_id".into(), connection_id.clone());
@@ -320,9 +345,30 @@ fn all_definitions() -> Vec<Value> {
             }, "required": ["name", "content"] },
             "annotations": edit,
         }),
+        json!({
+            "name": "get_task",
+            "description": "Follow a call that went on in the background: a call that takes more than about 40 seconds (waiting for the user's approval, or a long script or query) answers with a task_id instead of its result. This waits up to wait_ms for it to end and returns its result, or else its status and what it reported so far (a script's finished statements and notices).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_id": task_id,
+                    "wait_ms": { "type": "integer", "minimum": 0, "maximum": MAX_TASK_WAIT_MS, "default": DEFAULT_TASK_WAIT_MS, "description": "How long to wait for the task to end before answering with its status." },
+                    "from_line": { "type": "integer", "minimum": 0, "default": 0, "description": "Show reported lines from this index on (the previous status says which to pass)." },
+                },
+                "required": ["task_id"],
+            },
+            "annotations": read,
+        }),
+        json!({
+            "name": "cancel_task",
+            "description": "Stop a call that went on in the background: withdraws a request still waiting for the user's approval, or stops a running script or statement on the server. What was already committed stays; an open transaction is rolled back.",
+            "inputSchema": { "type": "object", "properties": { "task_id": task_id }, "required": ["task_id"] },
+            "annotations": write,
+        }),
     ]
 }
 
+#[derive(Debug, Clone)]
 pub(crate) struct ToolOutput {
     pub text: String,
     pub is_error: bool,
@@ -392,6 +438,8 @@ struct Call<'a> {
     tool: Tool,
     target: Target,
     started: Instant,
+    /// Followed by get_task when the call outlasts `inline_wait`.
+    task: Arc<Task>,
 }
 
 impl Call<'_> {
@@ -460,14 +508,41 @@ pub(crate) async fn call(
         Value::Object(map) => Value::Object(map),
         _ => json!({}),
     };
-    let mut call = Call {
-        inner,
-        client,
-        tool,
-        target: Target::default(),
-        started: Instant::now(),
+    let task_id = str_arg(&args, "task_id").unwrap_or_default();
+    match tool {
+        Tool::GetTask => {
+            let wait = whole_arg(&args, "wait_ms")
+                .unwrap_or(DEFAULT_TASK_WAIT_MS)
+                .clamp(0, MAX_TASK_WAIT_MS);
+            let from_line = whole_arg(&args, "from_line").unwrap_or(0).max(0) as usize;
+            let wait = Duration::from_millis(wait as u64);
+            return Some(tasks::get(inner, &task_id, wait, from_line).await);
+        }
+        Tool::CancelTask => return Some(tasks::cancel(inner, &task_id)),
+        _ => {}
+    }
+    let task = Task::new(&client.id, tool.name(), tool.changes_data());
+    let (owned_inner, owned_client, followed) = (inner.clone(), client.clone(), task.clone());
+    let work = async move {
+        let mut call = Call {
+            inner: &owned_inner,
+            client: &owned_client,
+            tool,
+            target: Target::default(),
+            started: Instant::now(),
+            task: followed,
+        };
+        run_call(&mut call, &args).await
     };
-    Some(run_call(&mut call, &args).await)
+    Some(tasks::run(inner, task, work).await)
+}
+
+/// An integer argument that may be 0, also when sent as a string.
+fn whole_arg(args: &Value, key: &str) -> Option<i64> {
+    args.get(key).and_then(|v| {
+        v.as_i64()
+            .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+    })
 }
 
 async fn run_call(call: &mut Call<'_>, args: &Value) -> ToolOutput {
@@ -539,6 +614,7 @@ async fn run_call(call: &mut Call<'_>, args: &Value) -> ToolOutput {
         Decision::Allow => "Allowed",
         Decision::AllowAlways => "Allowed (always)",
         _ => {
+            call.task.set_phase(Phase::Approval);
             let request = Request {
                 tool: tool.name(),
                 capability: cap,
@@ -559,6 +635,7 @@ async fn run_call(call: &mut Call<'_>, args: &Value) -> ToolOutput {
         }
     };
 
+    call.task.set_phase(Phase::Running);
     let timeout = match tool {
         Tool::RunScript => script_timeout(args) + Duration::from_secs(30),
         _ => OP_TIMEOUT,
@@ -684,7 +761,10 @@ async fn plan(call: &mut Call<'_>, args: &Value, session: Option<&PgSession>) ->
                 .expect("uses the server")
                 .client(call.target.db())
                 .await?;
-            let dry = write(&client, &sql, false).await?;
+            let stop = StopOnDrop::new(&client);
+            let dry = write(&client, &sql, false).await;
+            stop.disarm();
+            let dry = dry?;
             Ok(Plan {
                 title: detail.clone(),
                 code: sql.clone(),
@@ -841,9 +921,10 @@ async fn execute(
             let client = session.expect("uses the server").client(db).await?;
             let sql = plan.sql.as_deref().unwrap_or_default();
             let limit = int_arg(args, "limit", DEFAULT_ROWS, MAX_ROWS) as usize;
-            let rows = read_only_with(&client, sql, limit, STATEMENT_TIMEOUT)
-                .await
-                .map_err(invalid)?;
+            let stop = StopOnDrop::new(&client);
+            let rows = read_only_with(&client, sql, limit, STATEMENT_TIMEOUT).await;
+            stop.disarm();
+            let rows = rows.map_err(invalid)?;
             let shown = rows.rows.len() as u64;
             let mut text = format!(
                 "{} (values as text, one JSON object per line):\n{}",
@@ -870,9 +951,10 @@ async fn execute(
             } else {
                 format!("EXPLAIN {sql}")
             };
-            let rows = read_only_with(&client, &explain, usize::MAX, STATEMENT_TIMEOUT)
-                .await
-                .map_err(invalid)?;
+            let stop = StopOnDrop::new(&client);
+            let rows = read_only_with(&client, &explain, usize::MAX, STATEMENT_TIMEOUT).await;
+            stop.disarm();
+            let rows = rows.map_err(invalid)?;
             let plan_lines: Vec<String> = rows
                 .rows
                 .into_iter()
@@ -891,7 +973,10 @@ async fn execute(
             let client = session.expect("uses the server").client(db).await?;
             let sql = plan.sql.as_deref().unwrap_or_default();
             let command = run::command_of(sql);
-            let done = write(&client, sql, true).await?;
+            let stop = StopOnDrop::new(&client);
+            let done = write(&client, sql, true).await;
+            stop.disarm();
+            let done = done?;
             let tag = done.tag(&command);
             let mut text = format!("{tag}: committed.");
             if let Some(dry) = &plan.dry_run {
@@ -927,12 +1012,13 @@ async fn execute(
         Tool::RunScript => {
             let session = session.expect("uses the server");
             let sql = plan.sql.as_deref().unwrap_or_default();
-            run_script(session, db, sql, script_timeout(args)).await
+            run_script(session, db, sql, script_timeout(args), &call.task).await
         }
         Tool::CreateConnection => create_connection(call, args),
         Tool::UpdateConnection => update_connection(call, args).await,
         Tool::DeleteConnection => delete_connection(call).await,
         Tool::SaveScript => save_script(call, args),
+        Tool::GetTask | Tool::CancelTask => unreachable!("answered before a call starts"),
     }
 }
 
@@ -1026,6 +1112,34 @@ async fn write(client: &PgClient, sql: &str, commit: bool) -> AppResult<Written>
     }
 }
 
+/// Stops what a pooled client runs when the call is dropped mid-way (it
+/// timed out, or the client cancelled its task): cancels the statement on
+/// the server, then rolls back the transaction it may have left open, so
+/// the client is fit for the next call.
+struct StopOnDrop(Option<Arc<PgClient>>);
+
+impl StopOnDrop {
+    fn new(client: &Arc<PgClient>) -> Self {
+        Self(Some(client.clone()))
+    }
+
+    fn disarm(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        if let Some(client) = self.0.take() {
+            let canceller = client.canceller();
+            tokio::spawn(async move {
+                canceller.cancel().await;
+                let _ = client.client.simple_query("ROLLBACK").await;
+            });
+        }
+    }
+}
+
 /// Cancels the statement on the server when dropped before `disarm`: a
 /// call that times out is dropped mid-statement.
 struct CancelOnDrop(Option<crate::pg::connect::Canceller>);
@@ -1044,13 +1158,45 @@ impl Drop for CancelOnDrop {
     }
 }
 
+/// One finished statement of a script: its summary line, then the rows
+/// it returned.
+fn statement_text(r: &run::StatementResult) -> (String, Option<String>) {
+    let n = r.index + 1;
+    match &r.error {
+        Some(e) => (format!("{n}. {} failed: {e}", r.command), None),
+        None if r.returns_rows => {
+            let names: Vec<String> = r.columns.iter().map(|c| c.name.clone()).collect();
+            (
+                format!(
+                    "{n}. {}: {}{}",
+                    r.command,
+                    plural(r.row_count, "row", "rows"),
+                    if r.truncated {
+                        format!(", the first {} shown", r.rows.len())
+                    } else {
+                        String::new()
+                    }
+                ),
+                Some(json_lines(&names, &r.rows)),
+            )
+        }
+        None => (
+            format!("{n}. {} {}", r.command, thousands(r.row_count)),
+            None,
+        ),
+    }
+}
+
 /// Runs a script on a connection of its own, which closes afterwards: a
-/// transaction the script leaves open rolls back with it.
+/// transaction the script leaves open rolls back with it. Each statement
+/// is reported to the task as it ends, so a status shows how far it got,
+/// and a script stopped by its timeout still says what it had done.
 async fn run_script(
     session: &PgSession,
     database: &str,
     sql: &str,
     timeout: Duration,
+    task: &Arc<Task>,
 ) -> AppResult<Done> {
     let client = session.target.open(database).await?;
     let options = run::RunOptions {
@@ -1058,37 +1204,42 @@ async fn run_script(
         pooler_mode: session.target.settings.pooler_mode,
         wrap_read_only: false,
     };
-    let canceller = client.canceller();
-    let ran = tokio::time::timeout(timeout, run::run_sql(&client, sql, options, None)).await;
-    let Ok(ran) = ran else {
-        canceller.cancel().await;
-        return Err(invalid(format!(
-            "The script didn't finish within {} s and was stopped.",
-            timeout.as_secs()
-        )));
-    };
-    let mut text = String::new();
-    for r in &ran.results {
-        text.push_str(&format!("{}. ", r.index + 1));
-        match &r.error {
-            Some(e) => text.push_str(&format!("{} failed: {e}\n", r.command)),
-            None if r.returns_rows => {
-                let names: Vec<String> = r.columns.iter().map(|c| c.name.clone()).collect();
-                text.push_str(&format!(
-                    "{}: {}{}\n{}\n",
-                    r.command,
-                    plural(r.row_count, "row", "rows"),
-                    if r.truncated {
-                        format!(", the first {} shown", r.rows.len())
-                    } else {
-                        String::new()
-                    },
-                    json_lines(&names, &r.rows)
-                ));
-            }
-            None => text.push_str(&format!("{} {}\n", r.command, thousands(r.row_count))),
+    // Stops the statement on the server when the call is dropped: past the
+    // timeout below, or by cancel_task.
+    let guard = CancelOnDrop(Some(client.canceller()));
+    let finished = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let (sink, followed) = (finished.clone(), task.clone());
+    let reporting = run::run_sql_reporting(&client, sql, options, None, move |r| {
+        let (line, rows) = statement_text(r);
+        followed.print(line.clone());
+        let mut done = sink.lock().unwrap();
+        done.push(line);
+        if let Some(rows) = rows {
+            done.push(rows);
         }
-    }
+    });
+    let Ok(ran) = tokio::time::timeout(timeout, reporting).await else {
+        drop(guard);
+        let done = finished.lock().unwrap().clone();
+        let mut text = format!(
+            "The script didn't finish within {} s and was stopped: the statement it was running \
+             was cancelled, and a transaction the script had open was rolled back.",
+            timeout.as_secs()
+        );
+        if done.is_empty() {
+            text.push_str(" No statement had finished.");
+        } else {
+            text.push_str(&format!(
+                " These had finished, each committed on its own unless inside that transaction - \
+                 check what was applied before running the rest:\n{}",
+                done.join("\n")
+            ));
+        }
+        return Err(invalid(text));
+    };
+    guard.disarm();
+    let mut text = finished.lock().unwrap().join("\n");
+    text.push('\n');
     for n in &ran.notices {
         text.push_str(&format!("{}: {}\n", n.severity, n.message));
     }
@@ -1618,7 +1769,9 @@ pub(crate) mod tests {
                 "list_databases",
                 "list_schemas",
                 "list_tables",
-                "describe_table"
+                "describe_table",
+                "get_task",
+                "cancel_task"
             ]
         );
         let more = names(&config(
@@ -1796,6 +1949,7 @@ pub(crate) mod tests {
                 ..Target::default()
             },
             started: Instant::now(),
+            task: Task::new("s1", "query", false),
         };
         let args = json!({ "sql": "SELECT pg_terminate_backend(42)" });
         let error = plan(&mut call, &args, None)
@@ -1916,6 +2070,92 @@ pub(crate) mod tests {
             "-- Saved by Test client through Postgres Studio's MCP server\n-- Database: shop\n"
         ));
     }
+
+    /// A request nobody answers within inline_wait comes back as a task
+    /// that says it waits for the user; the answer arrives via get_task.
+    #[tokio::test]
+    async fn a_call_waiting_for_approval_goes_on_as_a_task() {
+        use super::super::test_support::set_inline_wait;
+        use super::super::{RequestChoice, REQUEST_CLOSED_EVENT, REQUEST_EVENT};
+        let (host, mut inner) = inner(Duration::from_secs(5));
+        set_inline_wait(&mut inner, Duration::from_millis(50));
+        set_policy(&inner, config(&[("saveScript", Policy::Ask)], &[]));
+        let args = json!({ "name": "report", "content": "SELECT 1;" });
+        let out = run(&inner, "save_script", args.clone()).await;
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            out.text
+                .starts_with("Waiting for the user to approve this in Postgres Studio"),
+            "{}",
+            out.text
+        );
+        assert!(
+            out.text.contains("Don't call save_script again"),
+            "{}",
+            out.text
+        );
+        let task_id = out.text.split('"').nth(1).unwrap().to_string();
+
+        // Still waiting: get_task says so after its wait.
+        let status = run(
+            &inner,
+            "get_task",
+            json!({ "task_id": task_id, "wait_ms": "20" }),
+        )
+        .await;
+        assert!(
+            status.text.starts_with("Waiting for the user"),
+            "{}",
+            status.text
+        );
+
+        let request = host.events_named(REQUEST_EVENT).pop().unwrap();
+        policy::answer(
+            &inner,
+            request["requestId"].as_str().unwrap(),
+            RequestChoice::Once,
+        )
+        .unwrap();
+        let done = run(&inner, "get_task", json!({ "task_id": task_id })).await;
+        assert!(!done.is_error, "{}", done.text);
+        assert!(
+            done.text.contains("(save_script) finished"),
+            "{}",
+            done.text
+        );
+        assert_eq!(host.scripts.list().unwrap().len(), 1);
+
+        // Cancelling withdraws the card and runs nothing.
+        let out = run(&inner, "save_script", args).await;
+        let task_id = out.text.split('"').nth(1).unwrap().to_string();
+        let cancelled = run(&inner, "cancel_task", json!({ "task_id": task_id })).await;
+        assert!(
+            cancelled.text.starts_with("Withdrew the request"),
+            "{}",
+            cancelled.text
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(
+            host.events_named(REQUEST_CLOSED_EVENT).pop().unwrap()["reason"],
+            "cancelled"
+        );
+        assert!(inner.approvals.lock().unwrap().is_empty());
+        let after = run(
+            &inner,
+            "get_task",
+            json!({ "task_id": task_id, "wait_ms": 0 }),
+        )
+        .await;
+        assert!(
+            after.is_error && after.text.contains("Cancelled"),
+            "{}",
+            after.text
+        );
+        assert_eq!(host.scripts.list().unwrap().len(), 1);
+
+        let unknown = run(&inner, "get_task", json!({ "task_id": "nope" })).await;
+        assert!(unknown.is_error);
+    }
 }
 
 #[cfg(test)]
@@ -2010,6 +2250,59 @@ mod live_tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         panic!("no request event");
+    }
+
+    /// A script that outlasts inline_wait goes on in the background, with
+    /// the statements it finished so far; get_task brings its result,
+    /// cancel_task stops another one on the server too.
+    #[tokio::test]
+    #[ignore = "needs POSTGRES_STUDIO_TEST_URI"]
+    async fn long_scripts_go_on_as_tasks() {
+        let (_host, mut inner, schema) = setup(Policy::Allow).await;
+        super::super::test_support::set_inline_wait(&mut inner, Duration::from_millis(300));
+        let script = format!(
+            "UPDATE {schema}.orders SET status = 'late' WHERE id = 1; SELECT pg_sleep(0.6); \
+             SELECT count(*) AS late FROM {schema}.orders WHERE status = 'late'"
+        );
+        let out = run(&inner, "run_script", on(json!({ "sql": script }))).await;
+        assert!(out.text.starts_with("Still running after"), "{}", out.text);
+        assert!(
+            out.text.contains("Don't call run_script again"),
+            "{}",
+            out.text
+        );
+        assert!(out.text.contains("1. UPDATE 1"), "{}", out.text);
+        let task_id = out.text.split('"').nth(1).unwrap().to_string();
+        let done = run(
+            &inner,
+            "get_task",
+            json!({ "task_id": task_id, "wait_ms": 5000 }),
+        )
+        .await;
+        assert!(!done.is_error, "{}", done.text);
+        assert!(done.text.contains("(run_script) finished"), "{}", done.text);
+        assert!(done.text.contains("{\"late\":\"1\"}"), "{}", done.text);
+
+        let sleeper = format!("SELECT pg_sleep(30) /* {schema} */");
+        let out = run(&inner, "run_script", on(json!({ "sql": sleeper }))).await;
+        let task_id = out.text.split('"').nth(1).unwrap().to_string();
+        let stopped = run(&inner, "cancel_task", json!({ "task_id": task_id })).await;
+        assert!(
+            stopped.text.starts_with("Stopped run_script"),
+            "{}",
+            stopped.text
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let still = scratch(
+            &inner,
+            &format!(
+                "SELECT count(*) FROM pg_stat_activity WHERE query LIKE '%pg_sleep(30) /* {schema} */%' \
+                 AND pid <> pg_backend_pid()"
+            ),
+        )
+        .await;
+        assert_eq!(still, ["0"]);
+        drop_scratch(&inner, &schema).await;
     }
 
     #[tokio::test]

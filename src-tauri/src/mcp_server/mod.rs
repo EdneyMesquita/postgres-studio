@@ -20,6 +20,7 @@ mod clients;
 mod connections;
 mod policy;
 mod server;
+mod tasks;
 mod tools;
 
 use std::collections::HashMap;
@@ -52,8 +53,12 @@ pub(crate) const SERVER_NAME: &str = "postgres-studio";
 /// The "connection id" the token is kept under in the secret store. Saved
 /// connections have UUID ids, so this can't collide with one.
 const TOKEN_SECRET_ID: &str = "postgres-studio-mcp-server";
-/// How long a request waits for the user before it's refused.
-const ASK_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long a request waits for the user before it's refused. The client
+/// isn't kept waiting that long: see `INLINE_WAIT`.
+const ASK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+/// How long a call may take before the client gets a task id instead of
+/// its result, under the minute many clients wait for a request.
+const INLINE_WAIT: Duration = Duration::from_secs(40);
 
 /// Off, ask the user each time, or allow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -211,7 +216,11 @@ pub(crate) struct Inner {
     sessions: Mutex<HashMap<String, ClientSession>>,
     approvals: Mutex<HashMap<String, policy::Pending>>,
     pool: connections::Pool,
+    /// Every call, for get_task and cancel_task, and so a client that goes
+    /// away has its calls stopped.
+    tasks: tasks::Tasks,
     ask_timeout: Duration,
+    inline_wait: Duration,
     client_paths: clients::Paths,
 }
 
@@ -227,7 +236,9 @@ impl Inner {
             sessions: Mutex::new(HashMap::new()),
             approvals: Mutex::new(HashMap::new()),
             pool: connections::Pool::default(),
+            tasks: tasks::Tasks::default(),
             ask_timeout,
+            inline_wait: INLINE_WAIT,
             client_paths,
         }
     }
@@ -343,9 +354,11 @@ impl Inner {
         }
     }
 
-    /// Drops a client session and refuses its pending requests.
+    /// Drops a client session, refuses its pending requests and stops its
+    /// calls still running.
     fn forget_session(&self, id: &str) -> bool {
         let removed = self.sessions.lock().unwrap().remove(id).is_some();
+        self.tasks.cancel_client(id);
         policy::close_client_requests(self, id);
         removed
     }
@@ -554,6 +567,11 @@ pub(crate) mod test_support {
         let paths = clients::Paths::for_tests(&host.dir.join("home"));
         let inner = Arc::new(Inner::new(host.clone(), ask_timeout, paths));
         (host, inner)
+    }
+
+    /// Calls answer with a task id after `wait` instead of 40 s.
+    pub fn set_inline_wait(inner: &mut Arc<Inner>, wait: Duration) {
+        Arc::get_mut(inner).expect("not shared yet").inline_wait = wait;
     }
 
     /// Sets the config without starting a listener.

@@ -42,9 +42,11 @@ works on data takes a connection_id from list_connections and a database. execut
 with one INSERT, UPDATE, DELETE or MERGE; run_ddl runs one schema change (CREATE, ALTER, DROP, \
 TRUNCATE, GRANT...); run_script runs several statements. The user decides in Postgres Studio's \
 settings what you may do: some tools may be turned off, each connection is read-only or read & \
-write, and some calls wait until the user approves them in the app (up to two minutes) - when that \
-happens, tell the user to look at Postgres Studio. A refusal means the user hasn't allowed it; \
-don't retry, ask them. Passwords are never available through this server: connections you create \
+write, and some calls wait until the user approves them in the app - when that happens, tell the \
+user to look at Postgres Studio. A call that takes more than about 40 seconds (waiting for that \
+approval, or a long script or query) answers at once with a task_id and goes on in the background: \
+follow it with get_task, stop it with cancel_task, and don't make the call again. A refusal means \
+the user hasn't allowed it; don't retry, ask them. Passwords are never available through this server: connections you create \
 are saved without one, and the user adds it in the app.";
 
 /// A running listener.
@@ -167,6 +169,7 @@ async fn stop(inner: &Arc<Inner>) {
         log::info!("MCP server stopped listening on port {}", listener.port);
     }
     inner.sessions.lock().unwrap().clear();
+    inner.tasks.cancel_all();
     policy::close_all_requests(inner);
     inner.pool.close_all("the MCP server stopped").await;
 }

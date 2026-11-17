@@ -198,6 +198,10 @@ pub(crate) async fn ask(inner: &Inner, client: &ClientSession, request: &Request
     );
     // The card waits in the app; the app may be behind other windows.
     inner.host.call_attention();
+    let _withdraw = Withdraw {
+        inner,
+        request_id: &request_id,
+    };
     match tokio::time::timeout(inner.ask_timeout, rx).await {
         Ok(Ok(RequestChoice::Once)) => Answer::Once,
         Ok(Ok(RequestChoice::Always)) => {
@@ -222,6 +226,22 @@ pub(crate) async fn ask(inner: &Inner, client: &ClientSession, request: &Request
                 emit_closed(inner, &request_id, "timeout");
             }
             Answer::Timeout
+        }
+    }
+}
+
+/// Takes the card away when the call stops waiting for any reason - also
+/// when it is dropped (the client cancelled its task).
+struct Withdraw<'a> {
+    inner: &'a Inner,
+    request_id: &'a str,
+}
+
+impl Drop for Withdraw<'_> {
+    fn drop(&mut self) {
+        let pending = self.inner.approvals.lock().unwrap().remove(self.request_id);
+        if pending.is_some() {
+            emit_closed(self.inner, self.request_id, "cancelled");
         }
     }
 }

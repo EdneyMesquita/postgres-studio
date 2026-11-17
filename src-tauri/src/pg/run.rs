@@ -88,6 +88,22 @@ pub async fn run_sql(
     options: RunOptions,
     caret: Option<usize>,
 ) -> SqlRun {
+    run_sql_reporting(client, sql, options, caret, |_| {}).await
+}
+
+/// `run_sql`, handing each statement's result to `on_result` as it ends,
+/// so a caller can follow a long script (and keep what it did if the
+/// script is stopped before the end).
+pub async fn run_sql_reporting<F>(
+    client: &PgClient,
+    sql: &str,
+    options: RunOptions,
+    caret: Option<usize>,
+    mut on_result: F,
+) -> SqlRun
+where
+    F: FnMut(&StatementResult) + Send,
+{
     let started = Instant::now();
     let statements = match caret {
         Some(chars) => {
@@ -103,6 +119,7 @@ pub async fn run_sql(
     for (index, stmt) in statements.iter().enumerate() {
         let result = run_statement(client, sql, index, stmt, options, &mut tx).await;
         let failed = result.error.is_some();
+        on_result(&result);
         results.push(result);
         if failed {
             break;
