@@ -58,6 +58,39 @@ const MAX_TASK_WAIT_MS: i64 = 45_000;
 
 /// What `execute` takes: statements that change rows.
 const WRITE_COMMANDS: [&str; 5] = ["INSERT", "UPDATE", "DELETE", "MERGE", "WITH"];
+/// What a read-only script may hold.
+const READ_COMMANDS: [&str; 6] = ["SELECT", "WITH", "VALUES", "TABLE", "SHOW", "EXPLAIN"];
+
+/// How run_script runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScriptMode {
+    /// Each statement commits on its own, unless the script opens a
+    /// transaction.
+    Normal,
+    /// Only reads, in one read-only transaction that is rolled back.
+    ReadOnly,
+    /// Everything in one transaction that is rolled back.
+    DryRun,
+}
+
+impl ScriptMode {
+    fn of(args: &Value) -> AppResult<Self> {
+        match (bool_arg(args, "read_only"), bool_arg(args, "dry_run")) {
+            (true, true) => Err(invalid(
+                "Pass read_only or dry_run, not both: a read-only script changes nothing anyway.",
+            )),
+            (true, false) => Ok(Self::ReadOnly),
+            (false, true) => Ok(Self::DryRun),
+            (false, false) => Ok(Self::Normal),
+        }
+    }
+
+    /// Whether running it again would repeat a change.
+    fn changes_data(self) -> bool {
+        self == Self::Normal
+    }
+}
+
 /// What `run_ddl` takes: statements that change the schema and its grants.
 const DDL_COMMANDS: [&str; 11] = [
     "CREATE", "ALTER", "DROP", "TRUNCATE", "COMMENT", "GRANT", "REVOKE", "REINDEX", "REFRESH",
@@ -185,10 +218,24 @@ impl Tool {
         )
     }
 
+    /// The capability this call needs: a read-only script needs only
+    /// `read`.
+    fn cap_for(self, args: &Value) -> Cap {
+        match self {
+            Tool::RunScript if matches!(ScriptMode::of(args), Ok(ScriptMode::ReadOnly)) => {
+                Cap::Read
+            }
+            tool => tool.cap(),
+        }
+    }
+
     /// Whether the call may change data or settings, so running it twice
     /// would repeat the change.
-    fn changes_data(self) -> bool {
-        !matches!(self.cap(), Cap::Browse | Cap::Read | Cap::ConnList)
+    fn changes_data(self, args: &Value) -> bool {
+        match self {
+            Tool::RunScript => ScriptMode::of(args).map_or(true, ScriptMode::changes_data),
+            tool => !matches!(tool.cap(), Cap::Browse | Cap::Read | Cap::ConnList),
+        }
     }
 }
 
@@ -207,7 +254,11 @@ pub(crate) fn definitions(config: &McpConfig) -> Value {
     let tools: Vec<Value> = Tool::ALL
         .into_iter()
         .zip(all)
-        .filter(|(tool, _)| policy::cap_policy(config, tool.cap()) != Policy::Off)
+        .filter(|(tool, _)| {
+            let on = |cap| policy::cap_policy(config, cap) != Policy::Off;
+            // A read-only script needs only `read`.
+            on(tool.cap()) || (*tool == Tool::RunScript && on(Cap::Read))
+        })
         .map(|(_, def)| def)
         .collect();
     Value::Array(tools)
@@ -308,10 +359,12 @@ fn all_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "run_script",
-            "description": "Runs several SQL statements in order, each committing on its own unless the script opens a transaction, stopping at the first error. Reports what each did, with the first rows of each result. A transaction left open is rolled back.",
+            "description": "Runs several SQL statements in order, each committing on its own unless the script opens a transaction, stopping at the first error. Reports what each did, with the first rows of each result. A transaction left open is rolled back. With read_only, it may hold only reads (SELECT, WITH, VALUES, TABLE, SHOW, EXPLAIN), runs in a read-only transaction and needs only read access. With dry_run, it runs in one transaction that is rolled back and reports what each statement would do (rows it would change, schema changes it would make): it still takes locks and fires triggers, may not hold BEGIN, COMMIT or ROLLBACK, and needs the same access as a real run.",
             "inputSchema": on_database(json!({
                 "sql": { "type": "string" },
                 "timeout_ms": { "type": "integer", "minimum": 1, "maximum": MAX_SCRIPT_MS, "default": DEFAULT_SCRIPT_MS },
+                "read_only": { "type": "boolean", "default": false, "description": "Only reads; needs only read access." },
+                "dry_run": { "type": "boolean", "default": false, "description": "Run it in a transaction that is rolled back, to see what it would do." },
             }), &["sql"]),
             "annotations": write,
         }),
@@ -568,7 +621,7 @@ pub(crate) async fn call(
         Tool::CancelTask => return Some(tasks::cancel(inner, &task_id)),
         _ => {}
     }
-    let task = Task::new(&client.id, tool.name(), tool.changes_data());
+    let task = Task::new(&client.id, tool.name(), tool.changes_data(&args));
     let (owned_inner, owned_client, followed) = (inner.clone(), client.clone(), task.clone());
     let work = async move {
         let mut call = Call {
@@ -613,7 +666,7 @@ async fn run_call(call: &mut Call<'_>, args: &Value) -> ToolOutput {
         }
     }
 
-    let cap = tool.cap();
+    let cap = tool.cap_for(args);
     let config = call.inner.config();
     let decision = policy::decide(
         &config,
@@ -644,7 +697,9 @@ async fn run_call(call: &mut Call<'_>, args: &Value) -> ToolOutput {
         .profile
         .as_ref()
         .is_some_and(|p| p.environment == Some(Environment::Production));
-    let guarded = production && config.confirm_production && call.task.changes_data;
+    // A dry run changes nothing, but takes locks and fires triggers.
+    let guarded =
+        production && config.confirm_production && (call.task.changes_data || cap == Cap::Script);
     let decision = match decision {
         Decision::Allow | Decision::AllowAlways if guarded => Decision::Ask,
         other => other,
@@ -706,7 +761,7 @@ async fn run_call(call: &mut Call<'_>, args: &Value) -> ToolOutput {
         .unwrap_or_else(|_| Err(invalid("The operation timed out.")));
     // A read that lost its connection runs once more on a fresh one.
     let lost = matches!(&result, Err(e) if lost_connection(e));
-    if lost && tool.uses_server() && !tool.changes_data() {
+    if lost && tool.uses_server() && !tool.changes_data(args) {
         let profile = call.target.profile.clone().expect("checked above");
         call.inner
             .pool
@@ -928,16 +983,17 @@ async fn plan(call: &mut Call<'_>, args: &Value, session: Option<&PgSession>) ->
         }
         Tool::RunScript => {
             let sql = sql_arg(args)?;
-            let n = split::split(&sql).len();
-            if n == 0 {
-                return Err(invalid("The script holds no statement."));
-            }
-            call.target.detail = Some(plural(n as u64, "statement", "statements"));
+            let mode = ScriptMode::of(args)?;
+            let n = check_script(&sql, mode)?;
+            let statements = plural(n as u64, "statement", "statements");
+            call.target.detail = Some(statements.clone());
+            let title = match mode {
+                ScriptMode::Normal => format!("A script of {statements}"),
+                ScriptMode::ReadOnly => format!("A read-only script of {statements}"),
+                ScriptMode::DryRun => format!("A dry run (rolled back) of {statements}"),
+            };
             Ok(Plan {
-                title: format!(
-                    "A script of {}",
-                    plural(n as u64, "statement", "statements")
-                ),
+                title,
                 code: sql.clone(),
                 sql: Some(sql),
                 ..empty
@@ -1163,7 +1219,15 @@ async fn execute(
         Tool::RunScript => {
             let session = session.expect("uses the server");
             let sql = plan.sql.as_deref().unwrap_or_default();
-            run_script(session, db, sql, script_timeout(args), &call.task).await
+            run_script(
+                session,
+                db,
+                sql,
+                script_timeout(args),
+                ScriptMode::of(args)?,
+                &call.task,
+            )
+            .await
         }
         Tool::CreateConnection => create_connection(call, args),
         Tool::UpdateConnection => update_connection(call, args).await,
@@ -1309,6 +1373,49 @@ impl Drop for CancelOnDrop {
     }
 }
 
+/// The statements of a script, checked for its mode: how many.
+fn check_script(sql: &str, mode: ScriptMode) -> AppResult<usize> {
+    let statements = split::split(sql);
+    if statements.is_empty() {
+        return Err(invalid("The script holds no statement."));
+    }
+    if mode == ScriptMode::Normal {
+        return Ok(statements.len());
+    }
+    // These act outside the transaction, so neither mode can hold them.
+    if let Some(f) = denied_function(sql) {
+        return Err(invalid(format!(
+            "{f} acts on the server, outside any transaction: run it without read_only or dry_run, if the user allows it."
+        )));
+    }
+    for (i, stmt) in statements.iter().enumerate() {
+        let command = run::command_of(&stmt.text);
+        let first = command.split(' ').next().unwrap_or_default();
+        let n = i + 1;
+        match mode {
+            ScriptMode::ReadOnly if !READ_COMMANDS.contains(&first) => {
+                return Err(invalid(format!(
+                    "Statement {n} is {command}: a read_only script holds only SELECT, WITH, VALUES, TABLE, SHOW and EXPLAIN."
+                )));
+            }
+            ScriptMode::DryRun if run::is_transaction_control(first) => {
+                return Err(invalid(format!(
+                    "Statement {n} is {command}: a dry run is one transaction that is rolled back, so it can't hold its own BEGIN, COMMIT or ROLLBACK."
+                )));
+            }
+            ScriptMode::DryRun
+                if first == "COPY" && stmt.text.to_ascii_lowercase().contains("program") =>
+            {
+                return Err(invalid(format!(
+                    "Statement {n} runs a program on the server, which a rollback can't undo."
+                )));
+            }
+            _ => {}
+        }
+    }
+    Ok(statements.len())
+}
+
 /// One finished statement of a script: its summary line, then the rows
 /// it returned.
 fn statement_text(r: &run::StatementResult) -> (String, Option<String>) {
@@ -1347,6 +1454,7 @@ async fn run_script(
     database: &str,
     sql: &str,
     timeout: Duration,
+    mode: ScriptMode,
     task: &Arc<Task>,
 ) -> AppResult<Done> {
     let client = session.target.open(database).await?;
@@ -1355,6 +1463,20 @@ async fn run_script(
         pooler_mode: session.target.settings.pooler_mode,
         wrap_read_only: false,
     };
+    // The modes run in one transaction of their own, rolled back at the
+    // end (the connection closing afterwards would roll it back anyway).
+    let begin = match mode {
+        ScriptMode::Normal => None,
+        ScriptMode::ReadOnly => Some("BEGIN READ ONLY"),
+        ScriptMode::DryRun => Some("BEGIN; SET LOCAL lock_timeout = '5s'"),
+    };
+    if let Some(begin) = begin {
+        client
+            .client
+            .batch_execute(begin)
+            .await
+            .map_err(|e| invalid(DbError::from_pg(&e).to_string()))?;
+    }
     // Stops the statement on the server when the call is dropped: past the
     // timeout below, or by cancel_task.
     let guard = CancelOnDrop(Some(client.canceller()));
@@ -1379,6 +1501,11 @@ async fn run_script(
         );
         if done.is_empty() {
             text.push_str(" No statement had finished.");
+        } else if mode != ScriptMode::Normal {
+            text.push_str(&format!(
+                " It ran in one transaction, rolled back, so nothing was kept. These had finished:\n{}",
+                done.join("\n")
+            ));
         } else {
             text.push_str(&format!(
                 " These had finished, each committed on its own unless inside that transaction - \
@@ -1389,17 +1516,33 @@ async fn run_script(
         return Err(invalid(text));
     };
     guard.disarm();
-    let mut text = finished.lock().unwrap().join("\n");
+    if begin.is_some() {
+        let _ = client.client.batch_execute("ROLLBACK").await;
+    }
+    let mut text = match mode {
+        ScriptMode::Normal | ScriptMode::ReadOnly => String::new(),
+        ScriptMode::DryRun => "Dry run: everything below was rolled back, nothing was kept. \
+                               The counts are what each statement would change.\n"
+            .to_string(),
+    };
+    text.push_str(&finished.lock().unwrap().join("\n"));
     text.push('\n');
     for n in &ran.notices {
         text.push_str(&format!("{}: {}\n", n.severity, n.message));
     }
-    if ran.transaction == run::TxState::Active || ran.transaction == run::TxState::Failed {
+    let left_open =
+        ran.transaction == run::TxState::Active || ran.transaction == run::TxState::Failed;
+    if left_open && mode == ScriptMode::Normal {
         text.push_str("The script left a transaction open: it was rolled back.\n");
     }
     let failed = ran.results.iter().any(|r| r.error.is_some());
     let meta = format!(
-        "{}{}",
+        "{}{}{}",
+        match mode {
+            ScriptMode::Normal => "",
+            ScriptMode::ReadOnly => "read-only, ",
+            ScriptMode::DryRun => "dry run, ",
+        },
         plural(ran.results.len() as u64, "statement", "statements"),
         if failed { ", stopped at an error" } else { "" }
     );
@@ -2000,12 +2143,60 @@ pub(crate) mod tests {
             ],
             &[],
         ));
-        for name in ["list_connections", "query", "explain", "execute"] {
+        // run_script stays, for read-only scripts.
+        for name in [
+            "list_connections",
+            "query",
+            "explain",
+            "execute",
+            "run_script",
+        ] {
             assert!(more.contains(&name.to_string()), "{name}");
         }
-        for name in ["save_script", "run_ddl", "run_script"] {
+        for name in ["save_script", "run_ddl"] {
             assert!(!more.contains(&name.to_string()), "{name}");
         }
+    }
+
+    #[test]
+    fn script_modes_check_what_the_script_holds() {
+        let reads = "SELECT 1; WITH a AS (SELECT 2) SELECT * FROM a; EXPLAIN SELECT 3";
+        assert_eq!(check_script(reads, ScriptMode::ReadOnly).unwrap(), 3);
+        let err = |sql, mode| check_script(sql, mode).unwrap_err().to_string();
+        assert!(err("SELECT 1; UPDATE t SET a = 1", ScriptMode::ReadOnly)
+            .contains("Statement 2 is UPDATE"));
+        assert!(err("SELECT pg_terminate_backend(42)", ScriptMode::ReadOnly)
+            .contains("pg_terminate_backend acts on the server"));
+        assert!(err("SELECT pg_terminate_backend(42)", ScriptMode::DryRun)
+            .contains("pg_terminate_backend"));
+        assert_eq!(
+            check_script(
+                "UPDATE t SET a = 1; ALTER TABLE t ADD b int",
+                ScriptMode::DryRun
+            )
+            .unwrap(),
+            2
+        );
+        assert!(
+            err("UPDATE t SET a = 1; COMMIT", ScriptMode::DryRun).contains("Statement 2 is COMMIT")
+        );
+        assert!(err("COPY t TO PROGRAM 'rm -rf /'", ScriptMode::DryRun).contains("runs a program"));
+        assert_eq!(
+            check_script("BEGIN; UPDATE t SET a = 1; COMMIT", ScriptMode::Normal).unwrap(),
+            3
+        );
+
+        assert_eq!(
+            Tool::RunScript.cap_for(&json!({ "read_only": "true" })),
+            Cap::Read
+        );
+        assert_eq!(
+            Tool::RunScript.cap_for(&json!({ "dry_run": true })),
+            Cap::Script
+        );
+        assert!(!Tool::RunScript.changes_data(&json!({ "dry_run": true })));
+        assert!(Tool::RunScript.changes_data(&json!({})));
+        assert!(ScriptMode::of(&json!({ "read_only": true, "dry_run": true })).is_err());
     }
 
     #[test]
@@ -2644,6 +2835,70 @@ mod live_tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         panic!("no request event");
+    }
+
+    /// A dry run reports what a script would change and keeps nothing; a
+    /// read-only script needs only read access and refuses writes.
+    #[tokio::test]
+    #[ignore = "needs POSTGRES_STUDIO_TEST_URI"]
+    async fn scripts_run_read_only_or_as_a_dry_run() {
+        let (_host, inner, schema) = setup(Policy::Allow).await;
+        let dry = format!(
+            "UPDATE {schema}.orders SET status = 'late' WHERE status = 'pending'; \
+             ALTER TABLE {schema}.orders ADD COLUMN note text; \
+             SELECT count(*) AS late FROM {schema}.orders WHERE status = 'late'"
+        );
+        let out = run(
+            &inner,
+            "run_script",
+            on(json!({ "sql": dry, "dry_run": true })),
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.starts_with("Dry run:"), "{}", out.text);
+        assert!(out.text.contains("1. UPDATE 3"), "{}", out.text);
+        assert!(out.text.contains("{\"late\":\"3\"}"), "{}", out.text);
+        let kept = scratch(
+            &inner,
+            &format!(
+                "SELECT count(*)::text || '/' || (SELECT count(*) FROM information_schema.columns \
+                 WHERE table_schema = '{schema}' AND column_name = 'note') FROM {schema}.orders WHERE status = 'late'"
+            ),
+        )
+        .await;
+        assert_eq!(kept, ["0/0"]);
+
+        // Read-only, on a connection shared read-only, with script off.
+        let mut config = inner.config();
+        config.connections.insert("live".into(), Level::Read);
+        config.caps.insert("script".into(), Policy::Off);
+        set_policy(&inner, config);
+        let reads = format!("SELECT count(*) AS n FROM {schema}.orders; SHOW search_path");
+        let out = run(
+            &inner,
+            "run_script",
+            on(json!({ "sql": reads, "read_only": true })),
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.contains("{\"n\":\"10\"}"), "{}", out.text);
+        let sneaky = format!(
+            "WITH gone AS (DELETE FROM {schema}.orders RETURNING 1) SELECT count(*) FROM gone"
+        );
+        let out = run(
+            &inner,
+            "run_script",
+            on(json!({ "sql": sneaky, "read_only": true })),
+        )
+        .await;
+        assert!(
+            out.is_error && out.text.contains("read-only transaction"),
+            "{}",
+            out.text
+        );
+        let out = run(&inner, "run_script", on(json!({ "sql": "SELECT 1" }))).await;
+        assert!(out.is_error, "{}", out.text);
+        drop_scratch(&inner, &schema).await;
     }
 
     /// timeout_ms sets the statement timeout of a read.

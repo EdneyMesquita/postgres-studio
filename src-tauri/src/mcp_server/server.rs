@@ -40,7 +40,8 @@ list_schemas, list_tables and describe_table (columns, types, keys and indexes) 
 before reading it with query or explain, which run in a read-only transaction. Every tool that \
 works on data takes a connection_id from list_connections and a database. execute changes rows \
 with one INSERT, UPDATE, DELETE or MERGE; run_ddl runs one schema change (CREATE, ALTER, DROP, \
-TRUNCATE, GRANT...); run_script runs several statements. The user decides in Postgres Studio's \
+TRUNCATE, GRANT...); run_script runs several statements, also read-only (read_only) or as a dry \
+run that is rolled back (dry_run). The user decides in Postgres Studio's \
 settings what you may do: some tools may be turned off, each connection is read-only or read & \
 write, and some calls wait until the user approves them in the app - when that happens, tell the \
 user to look at Postgres Studio. A call that takes more than about 40 seconds (waiting for that \
