@@ -34,10 +34,13 @@ use crate::logging::{self, Detail};
 use crate::models::{ConnectionProfile, ConnectionSource, Environment, DEFAULT_PORT};
 use crate::pg::{catalog, run, split, DbError, PgClient, PgSession};
 
-/// Server-side limit on reads, writes and dry runs.
-const STATEMENT_TIMEOUT: &str = "30s";
-/// Client-side backstop for one operation (scripts have their own timeout).
-const OP_TIMEOUT: Duration = Duration::from_secs(60);
+/// Server-side limit on reads, writes and dry runs, unless the call
+/// passes timeout_ms (up to `MAX_STATEMENT_MS`).
+const DEFAULT_STATEMENT_MS: i64 = 30_000;
+const MAX_STATEMENT_MS: i64 = 600_000;
+/// Client-side backstop for one operation, past its statement timeout
+/// (scripts have their own timeout).
+const OP_MARGIN: Duration = Duration::from_secs(30);
 /// Tool output is cut here.
 const MAX_OUTPUT: usize = 100 * 1024;
 /// The approval card's code is cut here.
@@ -219,6 +222,7 @@ fn all_definitions() -> Vec<Value> {
     let write = json!({ "readOnlyHint": false, "destructiveHint": true, "openWorldHint": false });
     let edit = json!({ "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false });
     let task_id = json!({ "type": "string", "description": "The task_id a call answered with when it went on in the background." });
+    let statement_timeout_ms = json!({ "type": "integer", "minimum": 1, "maximum": MAX_STATEMENT_MS, "default": DEFAULT_STATEMENT_MS, "description": "The statement_timeout it runs under, for a slow query on a large table. A call past about 40 s goes on in the background." });
     let on_database = |extra: Value, required: &[&str]| {
         let mut properties = Map::new();
         properties.insert("connection_id".into(), connection_id.clone());
@@ -276,6 +280,7 @@ fn all_definitions() -> Vec<Value> {
             "inputSchema": on_database(json!({
                 "sql": { "type": "string" },
                 "limit": { "type": "integer", "minimum": 1, "maximum": MAX_ROWS, "default": DEFAULT_ROWS },
+                "timeout_ms": statement_timeout_ms.clone(),
             }), &["sql"]),
             "annotations": read,
         }),
@@ -285,13 +290,14 @@ fn all_definitions() -> Vec<Value> {
             "inputSchema": on_database(json!({
                 "sql": { "type": "string" },
                 "analyze": { "type": "boolean", "default": false },
+                "timeout_ms": statement_timeout_ms.clone(),
             }), &["sql"]),
             "annotations": read,
         }),
         json!({
             "name": "execute",
             "description": "Runs one INSERT, UPDATE, DELETE or MERGE and commits it. It first runs once in a transaction that is rolled back, to count the rows it changes; the user may be asked to approve it with that count. RETURNING rows come back as JSON lines.",
-            "inputSchema": on_database(json!({ "sql": { "type": "string" } }), &["sql"]),
+            "inputSchema": on_database(json!({ "sql": { "type": "string" }, "timeout_ms": statement_timeout_ms }), &["sql"]),
             "annotations": write,
         }),
         json!({
@@ -692,8 +698,8 @@ async fn run_call(call: &mut Call<'_>, args: &Value) -> ToolOutput {
 
     call.task.set_phase(Phase::Running);
     let timeout = match tool {
-        Tool::RunScript => script_timeout(args) + Duration::from_secs(30),
-        _ => OP_TIMEOUT,
+        Tool::RunScript => script_timeout(args) + OP_MARGIN,
+        _ => statement_timeout(args) + OP_MARGIN,
     };
     let mut result = tokio::time::timeout(timeout, execute(call, args, session.as_deref(), &plan))
         .await
@@ -770,6 +776,28 @@ fn says_network(text: &str) -> bool {
 
 fn invalid(message: impl Into<String>) -> AppError {
     AppError::InvalidInput(message.into())
+}
+
+/// The statement timeout a read, write or dry run runs under.
+fn statement_timeout(args: &Value) -> Duration {
+    Duration::from_millis(
+        int_arg(args, "timeout_ms", DEFAULT_STATEMENT_MS, MAX_STATEMENT_MS) as u64,
+    )
+}
+
+/// `statement_timeout(args)` as PostgreSQL takes it: `45000ms`.
+fn statement_timeout_setting(args: &Value) -> String {
+    format!("{}ms", statement_timeout(args).as_millis())
+}
+
+/// A boolean argument, also when sent as a string ("true").
+fn bool_arg(args: &Value, key: &str) -> bool {
+    match args.get(key) {
+        Some(Value::Bool(b)) => *b,
+        Some(Value::String(s)) => s.trim().eq_ignore_ascii_case("true"),
+        Some(Value::Number(n)) => n.as_i64() == Some(1),
+        _ => false,
+    }
 }
 
 fn script_timeout(args: &Value) -> Duration {
@@ -878,7 +906,7 @@ async fn plan(call: &mut Call<'_>, args: &Value, session: Option<&PgSession>) ->
                 .client(call.target.db())
                 .await?;
             let stop = StopOnDrop::new(&client);
-            let dry = write(&client, &sql, false).await;
+            let dry = write(&client, &sql, false, &statement_timeout_setting(args)).await;
             stop.disarm();
             let dry = dry?;
             Ok(Plan {
@@ -1039,7 +1067,7 @@ async fn execute(
             let sql = plan.sql.as_deref().unwrap_or_default();
             let limit = int_arg(args, "limit", DEFAULT_ROWS, MAX_ROWS) as usize;
             let stop = StopOnDrop::new(&client);
-            let rows = read_only_with(&client, sql, limit, STATEMENT_TIMEOUT).await;
+            let rows = read_only_with(&client, sql, limit, &statement_timeout_setting(args)).await;
             stop.disarm();
             let rows = rows.map_err(invalid)?;
             let shown = rows.rows.len() as u64;
@@ -1062,14 +1090,20 @@ async fn execute(
         Tool::Explain => {
             let client = session.expect("uses the server").client(db).await?;
             let sql = plan.sql.as_deref().unwrap_or_default();
-            let analyze = args.get("analyze").and_then(Value::as_bool) == Some(true);
+            let analyze = bool_arg(args, "analyze");
             let explain = if analyze {
                 format!("EXPLAIN (ANALYZE, BUFFERS) {sql}")
             } else {
                 format!("EXPLAIN {sql}")
             };
             let stop = StopOnDrop::new(&client);
-            let rows = read_only_with(&client, &explain, usize::MAX, STATEMENT_TIMEOUT).await;
+            let rows = read_only_with(
+                &client,
+                &explain,
+                usize::MAX,
+                &statement_timeout_setting(args),
+            )
+            .await;
             stop.disarm();
             let rows = rows.map_err(invalid)?;
             let plan_lines: Vec<String> = rows
@@ -1091,7 +1125,7 @@ async fn execute(
             let sql = plan.sql.as_deref().unwrap_or_default();
             let command = run::command_of(sql);
             let stop = StopOnDrop::new(&client);
-            let done = write(&client, sql, true).await;
+            let done = write(&client, sql, true, &statement_timeout_setting(args)).await;
             stop.disarm();
             let done = done?;
             let tag = done.tag(&command);
@@ -1177,10 +1211,10 @@ impl Written {
 /// Runs one statement that changes rows in a transaction of its own, with
 /// a statement timeout: committed when `commit`, else rolled back (the dry
 /// run). A failure rolls back too.
-async fn write(client: &PgClient, sql: &str, commit: bool) -> AppResult<Written> {
+async fn write(client: &PgClient, sql: &str, commit: bool, timeout: &str) -> AppResult<Written> {
     let end = if commit { "COMMIT" } else { "ROLLBACK" };
     let batch = format!(
-        "BEGIN;\nSET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}';\nSET LOCAL lock_timeout = '5s';\n{sql};\n{end}"
+        "BEGIN;\nSET LOCAL statement_timeout = '{timeout}';\nSET LOCAL lock_timeout = '5s';\n{sql};\n{end}"
     );
     let result = async {
         let stream = client.client.simple_query_raw(&batch).await?;
@@ -2256,6 +2290,23 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn timeouts_and_booleans_also_come_as_strings() {
+        assert_eq!(statement_timeout_setting(&json!({})), "30000ms");
+        assert_eq!(
+            statement_timeout_setting(&json!({ "timeout_ms": "120000" })),
+            "120000ms"
+        );
+        assert_eq!(
+            statement_timeout_setting(&json!({ "timeout_ms": 9_999_999 })),
+            "600000ms"
+        );
+        assert!(bool_arg(&json!({ "analyze": "true" }), "analyze"));
+        assert!(bool_arg(&json!({ "analyze": true }), "analyze"));
+        assert!(!bool_arg(&json!({ "analyze": "no" }), "analyze"));
+        assert!(!bool_arg(&json!({}), "analyze"));
+    }
+
+    #[test]
     fn lost_connections_are_told_from_other_errors() {
         let reset = std::io::Error::from(std::io::ErrorKind::ConnectionReset);
         assert!(lost_connection(&AppError::Io(reset)));
@@ -2593,6 +2644,24 @@ mod live_tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         panic!("no request event");
+    }
+
+    /// timeout_ms sets the statement timeout of a read.
+    #[tokio::test]
+    #[ignore = "needs POSTGRES_STUDIO_TEST_URI"]
+    async fn reads_take_a_statement_timeout() {
+        let (_host, inner, schema) = setup(Policy::Allow).await;
+        let slow =
+            |timeout: &str| on(json!({ "sql": "SELECT pg_sleep(0.5)", "timeout_ms": timeout }));
+        let out = run(&inner, "query", slow("100")).await;
+        assert!(
+            out.is_error && out.text.contains("statement timeout"),
+            "{}",
+            out.text
+        );
+        let out = run(&inner, "query", slow("5000")).await;
+        assert!(!out.is_error, "{}", out.text);
+        drop_scratch(&inner, &schema).await;
     }
 
     /// A read whose connection the server dropped still answers: it runs
