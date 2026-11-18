@@ -23,6 +23,30 @@ export interface McpConfig {
   connections: Record<string, McpLevel>;
   /** Per connection id, or "*" for capabilities that aren't about one. */
   always: Record<string, McpCapability[]>;
+  /** How the app calls the user back when a request waits. */
+  alerts: { sound: boolean; focus: boolean };
+  /** Ask before every change on production connections, whatever the grants say. */
+  confirmProduction: boolean;
+  /** Keep a history of what clients change. */
+  history: boolean;
+}
+
+/** A change an MCP client made, from the history. */
+export interface McpHistoryEntry {
+  /** Milliseconds since the Unix epoch. */
+  at: number;
+  client: string;
+  tool: string;
+  connectionId: string | null;
+  connectionName: string | null;
+  environment: string | null;
+  target: string;
+  code: string;
+  outcome: "ok" | "error";
+  summary: string;
+  error: string | null;
+  approval: string;
+  durationMs: number;
 }
 
 export interface McpClient {
@@ -70,6 +94,8 @@ export interface McpRequest {
   code: string;
   /** e.g. "UPDATE 12 · rolled back"; null when there is none. */
   dryRun: string | null;
+  /** A change on a production connection: always asked, never "always". */
+  production?: boolean;
   /** Milliseconds since the Unix epoch. */
   at: number;
 }

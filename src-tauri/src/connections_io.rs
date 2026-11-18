@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{AppError, AppResult};
 use crate::models::{
     ConnectionAdvancedOptions, ConnectionProfile, ConnectionProfileInput, ConnectionSource,
-    SshAuthMethod, SshTunnelOptions, SslMode, TlsOptions, DEFAULT_PORT,
+    Environment, SshAuthMethod, SshTunnelOptions, SslMode, TlsOptions, DEFAULT_PORT,
 };
 use crate::secrets::{SecretKind, SecretStore};
 
@@ -30,6 +30,8 @@ struct FileEntry {
     name: String,
     #[serde(default)]
     color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    environment: Option<Environment>,
     source: ConnectionSource,
     #[serde(default)]
     database: Option<String>,
@@ -83,6 +85,7 @@ pub fn export_connections(
         let entry = FileEntry {
             name: p.name.clone(),
             color: p.color.clone(),
+            environment: p.environment,
             source: p.source.clone(),
             database: p.database.clone(),
             username: p.username.clone(),
@@ -199,6 +202,7 @@ fn parse_own(index: usize, raw: serde_json::Value) -> Result<ParsedImportEntry, 
             id: None,
             name: entry.name,
             color: entry.color,
+            environment: entry.environment,
             source: entry.source,
             database: entry.database,
             username: entry.username,
@@ -303,6 +307,7 @@ fn parse_pgadmin(index: usize, raw: &serde_json::Value) -> Result<ParsedImportEn
             id: None,
             name,
             color: None,
+            environment: None,
             source: ConnectionSource::Manual {
                 host,
                 port: s.port.unwrap_or(DEFAULT_PORT),
@@ -342,6 +347,7 @@ mod tests {
             id: id.to_string(),
             name: name.to_string(),
             color: Some("#4FA25A".to_string()),
+            environment: Some(Environment::Production),
             source: ConnectionSource::Manual {
                 host: "db.internal".to_string(),
                 port: 5433,
@@ -384,6 +390,7 @@ mod tests {
             assert_eq!(entry.input.password.as_deref(), expected);
             assert_eq!(entry.input.tls.ssl_mode, SslMode::VerifyFull);
             assert!(entry.input.advanced.read_only);
+            assert_eq!(entry.input.environment, Some(Environment::Production));
             assert_eq!(entry.address(), "db.internal:5433");
             assert_eq!(entry.folder.as_deref(), Some("Remote / EU"));
         }

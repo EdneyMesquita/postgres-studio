@@ -601,6 +601,7 @@ mod live_tests {
             id: "live-timescale".into(),
             name: "live-timescale".into(),
             color: None,
+            environment: None,
             source: crate::models::ConnectionSource::Uri { uri },
             database: None,
             username: None,

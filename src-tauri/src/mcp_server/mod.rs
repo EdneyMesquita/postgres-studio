@@ -18,11 +18,14 @@
 
 mod clients;
 mod connections;
+mod history;
 mod policy;
 mod server;
+mod tasks;
 mod tools;
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -33,6 +36,8 @@ use crate::error::{AppError, AppResult};
 use crate::saved_scripts::SavedScriptsStore;
 use crate::secrets::SecretKind;
 use crate::state::AppState;
+
+pub use history::{HistoryEntry, HistoryFilter};
 
 pub const REQUEST_EVENT: &str = "mcp-request";
 pub const REQUEST_CLOSED_EVENT: &str = "mcp-request-closed";
@@ -52,8 +57,12 @@ pub(crate) const SERVER_NAME: &str = "postgres-studio";
 /// The "connection id" the token is kept under in the secret store. Saved
 /// connections have UUID ids, so this can't collide with one.
 const TOKEN_SECRET_ID: &str = "postgres-studio-mcp-server";
-/// How long a request waits for the user before it's refused.
-const ASK_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long a request waits for the user before it's refused. The client
+/// isn't kept waiting that long: see `INLINE_WAIT`.
+const ASK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+/// How long a call may take before the client gets a task id instead of
+/// its result, under the minute many clients wait for a request.
+const INLINE_WAIT: Duration = Duration::from_secs(40);
 
 /// Off, ask the user each time, or allow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -75,6 +84,26 @@ pub enum Level {
     Write,
 }
 
+/// How the app calls the user back when a request set to Ask waits
+/// (Settings › MCP server). Both on unless the frontend says otherwise.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpAlerts {
+    /// A sound: the app's chime, or the desktop notification's.
+    pub sound: bool,
+    /// Bring the window forward, or ask for it with a notification.
+    pub focus: bool,
+}
+
+impl Default for McpAlerts {
+    fn default() -> Self {
+        Self {
+            sound: true,
+            focus: true,
+        }
+    }
+}
+
 /// The settings the frontend pushes: whether the server runs, where, and
 /// what clients may do. Capability ids: browse, read, write, ddl, script,
 /// connList, connEdit, connDelete, saveScript.
@@ -93,6 +122,19 @@ pub struct McpConfig {
     /// about a connection (creating connections, saving scripts...).
     #[serde(default)]
     pub always: HashMap<String, Vec<String>>,
+    #[serde(default)]
+    pub alerts: McpAlerts,
+    /// Ask before every change on a connection marked production, even
+    /// when the capability is set to Allow or was allowed "always".
+    #[serde(default = "default_true")]
+    pub confirm_production: bool,
+    /// Keep a history of what clients change (`history`).
+    #[serde(default = "default_true")]
+    pub history: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -147,8 +189,12 @@ pub(crate) trait Host: Send + Sync + 'static {
     fn saved_scripts(&self) -> &SavedScriptsStore;
     /// The sidebar's folder tree (the frontend's own JSON), or null.
     fn sidebar_layout(&self) -> Value;
-    /// Brings the app's window forward for a request waiting on the user.
-    fn call_attention(&self);
+    /// A request waits for the user: bring the window forward, or show a
+    /// desktop notification that does. Done here rather than in the
+    /// webview, which a minimized window may keep suspended.
+    fn call_attention(&self, alerts: McpAlerts, title: &str, body: &str);
+    /// Nothing waits any more: take the notification away.
+    fn dismiss_attention(&self) {}
 }
 
 impl<R: tauri::Runtime> Host for tauri::AppHandle<R> {
@@ -173,19 +219,12 @@ impl<R: tauri::Runtime> Host for tauri::AppHandle<R> {
             .unwrap_or(Value::Null)
     }
 
-    fn call_attention(&self) {
-        use tauri::Manager;
-        let Some(window) = self.get_webview_window("main") else {
-            return;
-        };
-        let _ = window.unminimize();
-        let _ = window.show();
-        // A desktop may refuse to hand focus over from another app (KDE and
-        // GNOME on Wayland do); the taskbar flag shows until it's focused.
-        let _ = window.set_focus();
-        if !window.is_focused().unwrap_or(false) {
-            let _ = window.request_user_attention(Some(tauri::UserAttentionType::Critical));
-        }
+    fn call_attention(&self, alerts: McpAlerts, title: &str, body: &str) {
+        crate::attention::call_attention(self, alerts.focus, alerts.sound, title, body);
+    }
+
+    fn dismiss_attention(&self) {
+        crate::attention::dismiss_attention();
     }
 }
 
@@ -211,12 +250,23 @@ pub(crate) struct Inner {
     sessions: Mutex<HashMap<String, ClientSession>>,
     approvals: Mutex<HashMap<String, policy::Pending>>,
     pool: connections::Pool,
+    /// Every call, for get_task and cancel_task, and so a client that goes
+    /// away has its calls stopped.
+    tasks: tasks::Tasks,
+    /// What clients changed, kept on this computer.
+    history: history::History,
     ask_timeout: Duration,
+    inline_wait: Duration,
     client_paths: clients::Paths,
 }
 
 impl Inner {
-    fn new(host: Arc<dyn Host>, ask_timeout: Duration, client_paths: clients::Paths) -> Self {
+    fn new(
+        host: Arc<dyn Host>,
+        ask_timeout: Duration,
+        client_paths: clients::Paths,
+        history_path: PathBuf,
+    ) -> Self {
         Self {
             host,
             config: Mutex::new(McpConfig::default()),
@@ -227,7 +277,10 @@ impl Inner {
             sessions: Mutex::new(HashMap::new()),
             approvals: Mutex::new(HashMap::new()),
             pool: connections::Pool::default(),
+            tasks: tasks::Tasks::default(),
+            history: history::History::new(history_path),
             ask_timeout,
+            inline_wait: INLINE_WAIT,
             client_paths,
         }
     }
@@ -235,6 +288,20 @@ impl Inner {
     fn emit<T: Serialize>(&self, event: &str, payload: &T) {
         if let Ok(value) = serde_json::to_value(payload) {
             self.host.emit(event, value);
+        }
+    }
+
+    /// Calls the user back for a waiting request, as the settings say.
+    fn call_attention(&self, title: &str, body: &str) {
+        let alerts = self.config().alerts;
+        if alerts.focus {
+            self.host.call_attention(alerts, title, body);
+        }
+    }
+
+    fn dismiss_attention(&self) {
+        if self.approvals.lock().unwrap().is_empty() {
+            self.host.dismiss_attention();
         }
     }
 
@@ -343,9 +410,11 @@ impl Inner {
         }
     }
 
-    /// Drops a client session and refuses its pending requests.
+    /// Drops a client session, refuses its pending requests and stops its
+    /// calls still running.
     fn forget_session(&self, id: &str) -> bool {
         let removed = self.sessions.lock().unwrap().remove(id).is_some();
+        self.tasks.cancel_client(id);
         policy::close_client_requests(self, id);
         removed
     }
@@ -382,13 +451,45 @@ pub struct McpServer {
 
 impl McpServer {
     pub fn new<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Self {
+        use tauri::Manager;
+        let data_dir = app
+            .path()
+            .app_data_dir()
+            .unwrap_or_else(|_| std::env::temp_dir().join("postgres-studio"));
         Self {
             inner: Arc::new(Inner::new(
                 Arc::new(app),
                 ASK_TIMEOUT,
                 clients::Paths::from_env(),
+                data_dir.join("mcp-history.jsonl"),
             )),
         }
+    }
+
+    /// The history's entries the filter picks, newest first.
+    pub fn history(&self, filter: &HistoryFilter) -> AppResult<Vec<HistoryEntry>> {
+        self.inner.history.list(filter)
+    }
+
+    pub fn history_count(&self) -> AppResult<usize> {
+        self.inner.history.count()
+    }
+
+    pub fn clear_history(&self) -> AppResult<()> {
+        self.inner.history.clear()?;
+        log::info!("MCP server: the history was cleared");
+        Ok(())
+    }
+
+    /// Writes the history to `path` as Markdown or JSON; how many entries.
+    pub fn export_history(&self, path: &str, format: &str) -> AppResult<usize> {
+        let entries = self.inner.history.list(&HistoryFilter::default())?;
+        let text = match format {
+            "json" => history::json(&entries),
+            _ => history::markdown(&entries),
+        };
+        std::fs::write(path, text)?;
+        Ok(entries.len())
     }
 
     /// Applies new settings: starts, stops or restarts the listener.
@@ -541,7 +642,7 @@ pub(crate) mod test_support {
             self.layout.lock().unwrap().clone()
         }
 
-        fn call_attention(&self) {
+        fn call_attention(&self, _alerts: McpAlerts, _title: &str, _body: &str) {
             self.attention
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
@@ -552,8 +653,18 @@ pub(crate) mod test_support {
     pub fn inner(ask_timeout: Duration) -> (Arc<TestHost>, Arc<Inner>) {
         let host = Arc::new(TestHost::new());
         let paths = clients::Paths::for_tests(&host.dir.join("home"));
-        let inner = Arc::new(Inner::new(host.clone(), ask_timeout, paths));
+        let inner = Arc::new(Inner::new(
+            host.clone(),
+            ask_timeout,
+            paths,
+            host.dir.join("mcp-history.jsonl"),
+        ));
         (host, inner)
+    }
+
+    /// Calls answer with a task id after `wait` instead of 40 s.
+    pub fn set_inline_wait(inner: &mut Arc<Inner>, wait: Duration) {
+        Arc::get_mut(inner).expect("not shared yet").inline_wait = wait;
     }
 
     /// Sets the config without starting a listener.

@@ -15,6 +15,7 @@ import {
   Sparkles,
   SquareTerminal,
   Sun,
+  Trash2,
   Upload,
   Workflow,
 } from "lucide-react";
@@ -174,6 +175,12 @@ export function PaletteActions({ search, run }: PaletteActionsProps) {
       icon: <ArrowLeftRight />,
       label: "Import / export connections",
       perform: () => useUiStore.getState().openTransfer("export"),
+    },
+    {
+      id: "delete-connections",
+      icon: <Trash2 />,
+      label: "Delete connections",
+      perform: () => useUiStore.getState().openDeleteConnections(),
     },
     {
       id: "toggle-explorer",

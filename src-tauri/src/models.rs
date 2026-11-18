@@ -91,6 +91,38 @@ pub struct ConnectionAdvancedOptions {
     pub show_system_schemas: bool,
 }
 
+/// What a connection is for. Set by the user; production makes the MCP
+/// server ask before any change a client makes on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Environment {
+    Development,
+    Testing,
+    Staging,
+    Production,
+}
+
+impl Environment {
+    pub fn id(self) -> &'static str {
+        match self {
+            Environment::Development => "development",
+            Environment::Testing => "testing",
+            Environment::Staging => "staging",
+            Environment::Production => "production",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "development" | "dev" => Some(Environment::Development),
+            "testing" | "test" | "qa" => Some(Environment::Testing),
+            "staging" | "stage" | "beta" | "homologation" => Some(Environment::Staging),
+            "production" | "prod" => Some(Environment::Production),
+            _ => None,
+        }
+    }
+}
+
 /// Persisted, non-secret connection metadata. Lives in `connections.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -100,6 +132,9 @@ pub struct ConnectionProfile {
     /// Identity color as `#RRGGBB`; `None` lets the UI pick one from the id.
     #[serde(default)]
     pub color: Option<String>,
+    /// Defaulted so files saved before it existed still load.
+    #[serde(default)]
+    pub environment: Option<Environment>,
     pub source: ConnectionSource,
     /// The database to connect to first; the URI's, or `postgres`.
     pub database: Option<String>,
@@ -124,6 +159,8 @@ pub struct ConnectionProfileInput {
     pub name: String,
     #[serde(default)]
     pub color: Option<String>,
+    #[serde(default)]
+    pub environment: Option<Environment>,
     pub source: ConnectionSource,
     pub database: Option<String>,
     pub username: Option<String>,
@@ -143,6 +180,7 @@ pub struct ConnectionProfileMeta {
     pub id: ConnectionId,
     pub name: String,
     pub color: Option<String>,
+    pub environment: Option<Environment>,
     pub summary: String,
     pub database: Option<String>,
     pub read_only: bool,
@@ -163,6 +201,7 @@ impl From<&ConnectionProfile> for ConnectionProfileMeta {
             id: profile.id.clone(),
             name: profile.name.clone(),
             color: profile.color.clone(),
+            environment: profile.environment,
             summary,
             database: profile.database.clone(),
             read_only: profile.advanced.read_only,

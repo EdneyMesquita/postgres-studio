@@ -177,6 +177,7 @@ pub(crate) mod test_support {
             id: "live".into(),
             name: "live".into(),
             color: None,
+            environment: None,
             source: ConnectionSource::Uri { uri },
             database: None,
             username: None,

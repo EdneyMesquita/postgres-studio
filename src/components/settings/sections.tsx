@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Download, Monitor, Moon, PanelRight, Rows3, Sun, Upload } from "lucide-react";
+import { Download, Monitor, Moon, PanelRight, Rows3, Sun, Trash2, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -102,6 +102,7 @@ export function ResultsSettings() {
 
 export function ConnectionsSettings() {
   const openTransfer = useUiStore((s) => s.openTransfer);
+  const openDeleteConnections = useUiStore((s) => s.openDeleteConnections);
   return (
     <>
       <Lead>Saved connections stay on this computer; their passwords stay in the system keychain.</Lead>
@@ -122,6 +123,15 @@ export function ConnectionsSettings() {
           <Button onClick={() => openTransfer("export")}>
             <Download className="size-3.5" />
             Export…
+          </Button>
+        </SettingRow>
+        <SettingRow
+          title="Delete connections"
+          description="Pick several saved connections and delete them at once, with their saved passwords."
+        >
+          <Button onClick={() => openDeleteConnections()}>
+            <Trash2 className="size-3.5" />
+            Delete…
           </Button>
         </SettingRow>
       </div>

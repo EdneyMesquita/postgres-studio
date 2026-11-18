@@ -129,8 +129,11 @@ interface SessionsState {
   openDiagram: (connection: TabConnection, database: string, schema: string, focus?: string) => void;
   /** Focuses the database's activity monitor, opening it if needed; `view` picks its view. */
   openActivity: (connection: TabConnection, database: string, options?: { view?: "jobs" | "sessions" | "locks" }) => void;
-  /** Points a console tab at another database of its connection. */
-  switchConsoleDatabase: (id: string, database: string) => void;
+  /**
+   * Points a console tab at another database - of its own connection, or
+   * of `connection` to move it to another server.
+   */
+  switchConsoleDatabase: (id: string, database: string, connection?: TabConnection) => void;
   activateTab: (id: string) => void;
   closeTab: (id: string) => void;
   closeOtherTabs: (id: string) => void;
@@ -313,13 +316,17 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
       });
     },
 
-    switchConsoleDatabase: (id, database) =>
+    switchConsoleDatabase: (id, database, connection) =>
       set((s) => ({
-        tabs: s.tabs.map((t) =>
-          t.id === id && t.kind === "console" && t.database !== database
-            ? { ...t, database, number: nextConsoleNumber(s.tabs, t.connection.id, database) }
-            : t,
-        ),
+        tabs: s.tabs.map((t) => {
+          if (t.id !== id || t.kind !== "console") return t;
+          const target = connection ?? t.connection;
+          if (target.id === t.connection.id && t.database === database) return t;
+          // its own client on the old server would stay open there, holding
+          // whatever transaction it had: closing it rolls that back
+          if (target.id !== t.connection.id) release(t);
+          return { ...t, connection: target, database, number: nextConsoleNumber(s.tabs, target.id, database) };
+        }),
       })),
 
     activateTab: (id) => set({ activeTabId: id }),

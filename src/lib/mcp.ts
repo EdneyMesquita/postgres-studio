@@ -2,7 +2,7 @@
 export const MCP_SERVER_NAME = "postgres-studio";
 
 /** How long a request set to Ask waits before the server refuses it. */
-export const MCP_REQUEST_TIMEOUT_MS = 2 * 60_000;
+export const MCP_REQUEST_TIMEOUT_MS = 5 * 60_000;
 
 /** A client's config for the server, as text: "claude", "cursor", "codex", "vscode", or plain JSON. */
 export function mcpSnippet(client: string, url: string, token: string): string {

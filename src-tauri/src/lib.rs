@@ -1,5 +1,6 @@
 mod activity;
 mod assistant;
+mod attention;
 mod commands;
 mod connection;
 mod connections_io;
@@ -66,6 +67,10 @@ fn with_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
         commands::mcp_client_targets,
         commands::mcp_register_client,
         commands::mcp_unregister_client,
+        commands::mcp_history,
+        commands::mcp_history_count,
+        commands::mcp_history_clear,
+        commands::mcp_history_export,
         commands::release_tab,
         commands::tab_transaction,
         commands::apply_edits,

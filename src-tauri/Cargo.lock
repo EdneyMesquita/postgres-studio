@@ -3642,6 +3642,7 @@ dependencies = [
  "base64 0.23.1",
  "csv",
  "futures-util",
+ "gtk",
  "keyring",
  "log",
  "rand",
@@ -3664,6 +3665,7 @@ dependencies = [
  "toml_edit 0.25.17+spec-1.1.0",
  "urlencoding",
  "uuid",
+ "zbus",
 ]
 
 [[package]]

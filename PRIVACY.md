@@ -30,6 +30,7 @@ The MCP server is off until you turn it on in Settings › MCP server, and it on
 - What a client reads goes to that client, and to whatever AI provider it uses, under your account with them. Postgres Studio itself sends nothing anywhere.
 - Clients never get your passwords or full connection strings. A connection a client creates is saved without a password.
 - "Add to &lt;client&gt;" writes the server's address and the token into that client's own configuration file on your computer, and keeps a copy of the file as it was.
+- If you keep its history of changes (on by default), the app records on your computer each change a client made: the SQL it ran, when, on which connection, who approved it and what came of it. It is never sent anywhere, except that clients you allowed can read back the entries for connections they may read. You can export it, clear it or turn it off in Settings › MCP server.
 
 ## Contact
 
